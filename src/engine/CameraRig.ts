@@ -76,14 +76,18 @@ export class CameraRig {
     return this.trauma * this.trauma;
   }
 
-  public attachDomEvents(dom: HTMLElement, canLeftOrbit: () => boolean): void {
+  public attachDomEvents(
+    dom: HTMLElement,
+    canLeftOrbit: () => boolean,
+    canTouchOrbit: () => boolean = canLeftOrbit,
+  ): void {
     dom.addEventListener('contextmenu', (e) => e.preventDefault());
 
     dom.addEventListener('pointerdown', (e) => {
       const wantOrbit =
         e.button === 2 ||
         (e.button === 0 && e.altKey) ||
-        (e.button === 0 && canLeftOrbit());
+        (e.button === 0 && (e.pointerType === 'touch' ? canTouchOrbit() : canLeftOrbit()));
       const wantPan = e.button === 1 || (e.button === 2 && e.shiftKey);
 
       if (wantPan) {

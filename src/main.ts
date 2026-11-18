@@ -43,6 +43,24 @@ window.addEventListener('DOMContentLoaded', () => {
   const rangeTurretSpeed = $('#range-turret-speed') as HTMLInputElement;
   const turretSpeedValue = $('#turret-speed-value')!;
 
+  // Touch / mobile
+  const isTouchUi =
+    window.matchMedia('(pointer: coarse)').matches ||
+    (navigator.maxTouchPoints > 0 && window.matchMedia('(hover: none)').matches);
+  document.body.classList.toggle('is-touch', isTouchUi);
+  const mobileControls = $('#mobile-controls')!;
+  const stickMove = $('#stick-move')!;
+  const stickMoveKnob = $('#stick-move-knob')!;
+  const stickAim = $('#stick-aim')!;
+  const stickAimKnob = $('#stick-aim-knob')!;
+  const btnTouchFire = $('#btn-touch-fire')!;
+  const rotateHint = $('#rotate-hint')!;
+  const btnRotate = $('#btn-rotate')!;
+  const btnRotateDismiss = $('#btn-rotate-dismiss')!;
+  const btnChatMobile = $('#btn-chat-mobile')!;
+  const btnChatLobby = $('#btn-chat-lobby')!;
+  const btnFullscreen = $('#btn-fullscreen')!;
+
   // Charge Bar & Toasts
   const chargeWrap = $('#charge-bar-wrap')!;
   const chargeFill = $('#charge-bar-fill')!;
@@ -233,11 +251,18 @@ window.addEventListener('DOMContentLoaded', () => {
       if (hud.mode === 'demo') {
         hudTop.classList.add('hidden');
         chargeWrap.classList.add('hidden');
+        mobileControls.classList.add('hidden');
+        document.body.classList.remove('mobile-combat');
         if (!chatBar.classList.contains('hidden')) closeChat();
         if (chatLog.firstChild) chatLog.innerHTML = '';
         return;
       }
       hudTop.classList.remove('hidden');
+
+      const touchCombat =
+        (hud.mode === 'campaign' || hud.mode === 'pvp' || hud.mode === 'coop') && !app.matchEnded;
+      mobileControls.classList.toggle('hidden', !touchCombat);
+      document.body.classList.toggle('mobile-combat', touchCombat);
 
       // Voice is an online-room feature only
       const voiceAvailable = hud.mode === 'pvp' || hud.mode === 'coop';
@@ -381,6 +406,9 @@ window.addEventListener('DOMContentLoaded', () => {
       canNextStageAction = canNext;
       btnResultNext.textContent = canNext ? '下一战区' : '重新出击';
       resultModal.classList.remove('hidden');
+      mobileControls.classList.add('hidden');
+      document.body.classList.remove('mobile-combat');
+      resetTouchUi();
       closeChat();
     },
 
@@ -390,6 +418,7 @@ window.addEventListener('DOMContentLoaded', () => {
       resultModal.classList.add('hidden');
       closeChat();
       chatLog.innerHTML = '';
+      beginTouchCombat();
     },
 
     onChatMessage: (name: string, text: string, self: boolean) => {
@@ -402,6 +431,10 @@ window.addEventListener('DOMContentLoaded', () => {
       workshopBar.classList.add('hidden');
       resultModal.classList.add('hidden');
       hudTop.classList.add('hidden');
+      mobileControls.classList.add('hidden');
+      document.body.classList.remove('mobile-combat');
+      resetTouchUi();
+      exitLandscape();
       votePanel.classList.add('hidden');
       closeChat();
       chatLog.innerHTML = '';
@@ -441,6 +474,175 @@ window.addEventListener('DOMContentLoaded', () => {
   };
 
   const app = new GameApp(canvasRoot, uiBridge);
+
+  // ---- Mobile: fullscreen landscape + virtual sticks ----
+  type LockableOrientation = ScreenOrientation & {
+    lock?: (orientation: 'landscape') => Promise<void>;
+    unlock?: () => void;
+  };
+  let orientationLocked = false;
+  let lastLandscapeAttempt = 0;
+
+  const enterLandscape = async (): Promise<void> => {
+    if (!isTouchUi) return;
+    const now = Date.now();
+    if (now - lastLandscapeAttempt < 900) return;
+    lastLandscapeAttempt = now;
+
+    try {
+      if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+      }
+    } catch {
+      // Fullscreen is optional; the rotate hint still guides the player.
+    }
+    try {
+      const orientation = screen.orientation as LockableOrientation | undefined;
+      if (orientation?.lock) {
+        await orientation.lock('landscape');
+        orientationLocked = true;
+      }
+    } catch {
+      // iOS Safari does not support orientation lock.
+    }
+  };
+
+  const beginTouchCombat = (): void => {
+    rotateHint.classList.remove('hidden');
+    if (isTouchUi) showToast('左摇杆驾驶 · 右摇杆瞄准 · 开炮键长按蓄力');
+    void enterLandscape();
+  };
+
+  const exitLandscape = (): void => {
+    if (!isTouchUi) return;
+    try {
+      if (orientationLocked) (screen.orientation as LockableOrientation | undefined)?.unlock?.();
+    } catch {
+      // Ignore browsers that reject unlock.
+    }
+    orientationLocked = false;
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+  };
+
+  const resetTouchUi = (): void => {
+    stickMoveKnob.style.transform = '';
+    stickAimKnob.style.transform = '';
+    btnTouchFire.classList.remove('active');
+    app.releaseTouchInputs();
+  };
+
+  const setupStick = (
+    zone: HTMLElement,
+    knob: HTMLElement,
+    onChange: (x: number, y: number) => void,
+    deadzone = 0.18,
+  ): void => {
+    let pointerId: number | null = null;
+
+    const apply = (clientX: number, clientY: number): void => {
+      const rect = zone.getBoundingClientRect();
+      const radius = Math.max(20, rect.width * 0.32);
+      let dx = clientX - (rect.left + rect.width / 2);
+      let dy = clientY - (rect.top + rect.height / 2);
+      const dist = Math.hypot(dx, dy);
+      if (dist > radius) {
+        dx = (dx / dist) * radius;
+        dy = (dy / dist) * radius;
+      }
+      knob.style.transform = `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px)`;
+      const nx = dx / radius;
+      const ny = -dy / radius;
+      const live = Math.hypot(nx, ny) >= deadzone;
+      onChange(live ? nx : 0, live ? ny : 0);
+    };
+
+    const end = (id: number): void => {
+      if (pointerId !== id) return;
+      pointerId = null;
+      knob.style.transform = '';
+      onChange(0, 0);
+    };
+
+    zone.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      pointerId = e.pointerId;
+      zone.setPointerCapture(e.pointerId);
+      apply(e.clientX, e.clientY);
+    });
+    zone.addEventListener('pointermove', (e) => {
+      if (pointerId !== e.pointerId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      apply(e.clientX, e.clientY);
+    });
+    zone.addEventListener('pointerup', (e) => {
+      e.stopPropagation();
+      end(e.pointerId);
+    });
+    zone.addEventListener('pointercancel', (e) => {
+      e.stopPropagation();
+      end(e.pointerId);
+    });
+    zone.addEventListener('lostpointercapture', (e) => end(e.pointerId));
+  };
+
+  setupStick(stickMove, stickMoveKnob, (x, y) => app.setTouchMove(x, y));
+  setupStick(stickAim, stickAimKnob, (x, y) => app.setTouchAim(x, y));
+
+  let touchFireHeld = false;
+  btnTouchFire.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (touchFireHeld) return;
+    touchFireHeld = true;
+    btnTouchFire.classList.add('active');
+    btnTouchFire.setPointerCapture(e.pointerId);
+    app.touchFireStart();
+  });
+  const endTouchFire = (e: PointerEvent): void => {
+    if (!touchFireHeld) return;
+    e.preventDefault();
+    e.stopPropagation();
+    touchFireHeld = false;
+    btnTouchFire.classList.remove('active');
+    app.touchFireEnd();
+  };
+  btnTouchFire.addEventListener('pointerup', endTouchFire);
+  btnTouchFire.addEventListener('pointercancel', endTouchFire);
+  btnTouchFire.addEventListener('lostpointercapture', endTouchFire);
+  btnTouchFire.addEventListener('pointermove', (e) => {
+    if (touchFireHeld) e.stopPropagation();
+  });
+  mobileControls.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  const canLockOrientation =
+    typeof (screen.orientation as LockableOrientation | undefined)?.lock === 'function';
+  btnRotate.onclick = () => {
+    if (isTouchUi && !canLockOrientation) {
+      rotateHint.classList.add('hidden');
+      return;
+    }
+    void enterLandscape();
+  };
+  btnRotateDismiss.onclick = () => rotateHint.classList.add('hidden');
+  btnFullscreen.onclick = () => void enterLandscape();
+  if (isTouchUi && !canLockOrientation) {
+    btnRotate.textContent = '知道了，手动横屏';
+    btnRotateDismiss.classList.add('hidden');
+    btnFullscreen.classList.add('hidden');
+  }
+
+  // If a match starts without a direct gesture (e.g. host launches remotely),
+  // the first tap in combat promotes the page to fullscreen landscape.
+  window.addEventListener(
+    'pointerdown',
+    () => {
+      if (!isTouchUi || document.fullscreenElement || !app.isCombatMode()) return;
+      void enterLandscape();
+    },
+    { passive: true },
+  );
 
   // Fingerprint vote-ban (10 minutes, stored per browser)
   const BAN_KEY = 'agy_tank_bans_v1';
@@ -549,6 +751,14 @@ window.addEventListener('DOMContentLoaded', () => {
     e.preventDefault();
     openChat();
   });
+
+  const openChatFromUi = (): void => {
+    const canChat = app.isCombatMode() ? !app.matchEnded : isOnlineLobby();
+    if (!canChat) return;
+    openChat();
+  };
+  btnChatMobile.onclick = openChatFromUi;
+  btnChatLobby.onclick = openChatFromUi;
 
   chatInput.addEventListener('compositionstart', () => {
     chatComposing = true;
@@ -792,6 +1002,7 @@ window.addEventListener('DOMContentLoaded', () => {
     workshopBar.classList.add('hidden');
     resultModal.classList.add('hidden');
     app.startCampaign(selectedCampaignStage);
+    beginTouchCombat();
   };
 
   // PvP Map Selection
@@ -841,6 +1052,7 @@ window.addEventListener('DOMContentLoaded', () => {
     if (!ensureCanEnter()) return;
     const isPvp = currentSelectedMode === 'pvp';
     app.hostStartOnlineMatch(isPvp ? 'pvp' : 'coop', isPvp ? selectedPvpMap : selectedCampaignStage);
+    beginTouchCombat();
   };
 
   // Workshop Entry & Controls
@@ -878,6 +1090,7 @@ window.addEventListener('DOMContentLoaded', () => {
   btnWsPlay.onclick = () => {
     workshopBar.classList.add('hidden');
     app.launchWorkshopTest();
+    beginTouchCombat();
   };
 
   // Tactical Controls (Home / Camera / Slowmo / Audio)
@@ -885,6 +1098,11 @@ window.addEventListener('DOMContentLoaded', () => {
     heroOverlay.classList.remove('hidden');
     workshopBar.classList.add('hidden');
     resultModal.classList.add('hidden');
+    hudTop.classList.add('hidden');
+    mobileControls.classList.add('hidden');
+    document.body.classList.remove('mobile-combat');
+    resetTouchUi();
+    exitLandscape();
     closeChat();
     chatLog.innerHTML = '';
     app.startHeroDemo();
@@ -963,12 +1181,18 @@ window.addEventListener('DOMContentLoaded', () => {
         app.hostStartOnlineMatch(app.mode, app.mode === 'pvp' ? selectedPvpMap : selectedCampaignStage);
       }
     }
+    beginTouchCombat();
   };
 
   btnResultMenu.onclick = () => {
     resultModal.classList.add('hidden');
     heroOverlay.classList.remove('hidden');
     workshopBar.classList.add('hidden');
+    hudTop.classList.add('hidden');
+    mobileControls.classList.add('hidden');
+    document.body.classList.remove('mobile-combat');
+    resetTouchUi();
+    exitLandscape();
     closeChat();
     chatLog.innerHTML = '';
     app.startHeroDemo();

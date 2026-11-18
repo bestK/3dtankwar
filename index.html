@@ -2,7 +2,10 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
     <title>装甲战线 1985 · 3D 坦克大战</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -54,6 +57,8 @@
           <div id="voice-speaking" class="voice-speaking hidden"><span id="voice-speaking-names"></span></div>
           <button id="btn-voice" class="tool-chip voice-toggle">语音</button>
           <button id="btn-mute" class="tool-chip voice-mute hidden">闭麦</button>
+          <button id="btn-chat-mobile" class="tool-chip mobile-only">聊天</button>
+          <button id="btn-fullscreen" class="tool-chip mobile-only">横屏</button>
           <button id="btn-settings" class="tool-chip" aria-expanded="false">设置</button>
         </div>
 
@@ -190,6 +195,7 @@
             <button id="btn-share-link" class="tool-chip">复制邀请</button>
             <button id="btn-voice-lobby" class="tool-chip voice-toggle">语音</button>
             <button id="btn-mute-lobby" class="tool-chip voice-mute hidden">闭麦</button>
+            <button id="btn-chat-lobby" class="tool-chip mobile-only">聊天</button>
           </div>
 
           <div id="pvp-map-strip" class="stage-pills compact-gap">
@@ -227,6 +233,46 @@
 
     <!-- Fingerprint ban banner -->
     <div id="ban-banner" class="ban-banner hidden"></div>
+
+    <!-- Mobile Touch Controls -->
+    <div id="mobile-controls" class="mobile-controls hidden">
+      <div id="stick-move" class="stick-zone move">
+        <span class="stick-label">移动</span>
+        <div id="stick-move-knob" class="stick-knob"></div>
+      </div>
+      <div id="stick-aim" class="stick-zone aim">
+        <span class="stick-label">瞄准</span>
+        <div id="stick-aim-knob" class="stick-knob"></div>
+      </div>
+      <button id="btn-touch-fire" class="touch-fire" aria-label="开炮">开炮</button>
+
+      <div id="rotate-hint" class="rotate-hint">
+        <div class="rotate-card">
+          <svg class="rotate-glyph" viewBox="0 0 48 48" aria-hidden="true">
+            <rect x="14" y="6" width="20" height="36" rx="4" fill="none" stroke="currentColor" stroke-width="2.4" />
+            <path
+              d="M32 19a10 10 0 1 1-11 11"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.4"
+              stroke-linecap="round"
+            />
+            <path
+              d="M18 26l3 4 4-3"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.4"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <div class="rotate-title">横屏作战体验更佳</div>
+          <p class="rotate-tip">把手机横过来，或点下方按钮自动全屏横屏</p>
+          <button id="btn-rotate" class="cta-chip compact">进入全屏横屏</button>
+          <button id="btn-rotate-dismiss" class="rotate-dismiss">竖屏继续</button>
+        </div>
+      </div>
+    </div>
 
     <!-- Result Modal -->
     <section id="result-modal" class="result-modal hidden">

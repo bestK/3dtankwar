@@ -152,8 +152,14 @@ export class GameApp {
   private hasMouseMoved = false;
   private lastPointerX = -1;
   private lastPointerY = -1;
-  private aimMode: 'mouse' | 'keyboard' = 'mouse';
+  private aimMode: 'mouse' | 'keyboard' | 'touch' = 'mouse';
   private keyboardAimAngle = 0;
+  private touchMoveX = 0;
+  private touchMoveY = 0;
+  private touchAimX = 0;
+  private touchAimY = 0;
+  private touchAimActive = false;
+  private touchAimAngle = 0;
   private isLeftMouseDown = false;
   private isSpaceDown = false;
   private isPaintingWorkshop = false;
@@ -181,7 +187,8 @@ export class GameApp {
       antialias: false,
       powerPreference: 'high-performance',
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    const pixelRatioCap = window.matchMedia('(pointer: coarse)').matches ? 1.5 : 2;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, pixelRatioCap));
     this.renderer.setSize(w, h);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -275,6 +282,7 @@ export class GameApp {
     this.cameraRig.attachDomEvents(
       this.renderer.domElement,
       () => this.mode === 'demo' || this.cameraRig.preset === 'orbit',
+      () => this.mode !== 'workshop',
     );
 
     window.addEventListener('resize', () => {
@@ -348,6 +356,18 @@ export class GameApp {
     });
 
     this.renderer.domElement.addEventListener('pointermove', (e) => {
+      if (this.mode === 'workshop') {
+        this.mouseNdc.x = (e.clientX / window.innerWidth) * 2 - 1;
+        this.mouseNdc.y = -(e.clientY / window.innerHeight) * 2 + 1;
+        this.updateWorkshopCursor();
+        if (this.isPaintingWorkshop) {
+          this.paintAtWorkshopCursor(e.shiftKey);
+        }
+        return;
+      }
+      // Touch drags orbit the camera; aiming is handled by the right stick.
+      if (e.pointerType === 'touch') return;
+
       this.mouseNdc.x = (e.clientX / window.innerWidth) * 2 - 1;
       this.mouseNdc.y = -(e.clientY / window.innerHeight) * 2 + 1;
       this.hasMouseMoved = true;
@@ -355,13 +375,6 @@ export class GameApp {
       this.lastPointerX = e.clientX;
       this.lastPointerY = e.clientY;
       if (this.isCombatMode() && pointerTravel > 4) this.aimMode = 'mouse';
-
-      if (this.mode === 'workshop') {
-        this.updateWorkshopCursor();
-        if (this.isPaintingWorkshop) {
-          this.paintAtWorkshopCursor(e.shiftKey);
-        }
-      }
     });
 
     this.renderer.domElement.addEventListener('pointerdown', (e) => {
@@ -374,7 +387,7 @@ export class GameApp {
           this.isPaintingWorkshop = true;
           this.updateWorkshopCursor();
           this.paintAtWorkshopCursor(e.shiftKey);
-        } else if (this.isCombatMode() && this.cameraRig.preset !== 'orbit') {
+        } else if (e.pointerType !== 'touch' && this.isCombatMode() && this.cameraRig.preset !== 'orbit') {
           this.aimMode = 'mouse';
           this.hasMouseMoved = true;
           this.isLeftMouseDown = true;
@@ -399,6 +412,55 @@ export class GameApp {
 
   public isCombatMode(): boolean {
     return this.mode === 'campaign' || this.mode === 'pvp' || this.mode === 'coop';
+  }
+
+  /** Left stick: x = strafe, y = forward (both -1..1). */
+  public setTouchMove(x: number, y: number): void {
+    this.touchMoveX = Math.max(-1, Math.min(1, x));
+    this.touchMoveY = Math.max(-1, Math.min(1, y));
+  }
+
+  /** Right stick: aim direction in camera space (x = right, y = forward). */
+  public setTouchAim(x: number, y: number): void {
+    this.touchAimX = Math.max(-1, Math.min(1, x));
+    this.touchAimY = Math.max(-1, Math.min(1, y));
+    if (Math.hypot(this.touchAimX, this.touchAimY) < 0.2) {
+      this.touchAimActive = false;
+      return;
+    }
+    this.touchAimActive = true;
+    this.aimMode = 'touch';
+  }
+
+  public releaseTouchInputs(): void {
+    this.touchMoveX = 0;
+    this.touchMoveY = 0;
+    this.touchAimActive = false;
+    if (this.isSpaceDown || this.isLeftMouseDown) {
+      this.isSpaceDown = false;
+      this.isLeftMouseDown = false;
+      this.chargeHoldSec = 0;
+      if (this.localPlayer) this.localPlayer.chargeRatio = 0;
+    }
+  }
+
+  public touchFireStart(): void {
+    if (!this.isCombatMode() || this.cameraRig.preset === 'orbit') return;
+    if (this.cheatActive) {
+      this.fireCheatBarrage();
+      return;
+    }
+    this.isSpaceDown = true;
+  }
+
+  public touchFireEnd(): void {
+    if (!this.isSpaceDown) return;
+    this.isSpaceDown = false;
+    if (this.isCombatMode() && this.cameraRig.preset !== 'orbit') {
+      this.tryFireLocal(this.chargeHoldSec >= 0.52);
+    }
+    this.chargeHoldSec = 0;
+    if (this.localPlayer) this.localPlayer.chargeRatio = 0;
   }
 
   public setPlayerMod(selection: string): void {
@@ -721,6 +783,9 @@ export class GameApp {
     this.freezeTimer = 0;
     this.fortressTimer = 0;
     this.aimMode = 'mouse';
+    this.touchMoveX = 0;
+    this.touchMoveY = 0;
+    this.touchAimActive = false;
     this.isLeftMouseDown = false;
     this.isSpaceDown = false;
     this.chargeHoldSec = 0;
@@ -1342,12 +1407,17 @@ export class GameApp {
       return;
     }
 
-    let moveX = 0;
-    let moveZ = 0;
+    let moveX = this.touchMoveX;
+    let moveZ = -this.touchMoveY;
     if (this.keys.has('KeyW')) moveZ -= 1;
     if (this.keys.has('KeyS')) moveZ += 1;
     if (this.keys.has('KeyA')) moveX -= 1;
     if (this.keys.has('KeyD')) moveX += 1;
+    const moveLen = Math.hypot(moveX, moveZ);
+    if (moveLen > 1) {
+      moveX /= moveLen;
+      moveZ /= moveLen;
+    }
 
     // Rotate WASD input relative to current camera azimuth so controls ALWAYS feel intuitive even after 360° camera orbit!
     let worldMoveX = moveX;
@@ -1366,7 +1436,19 @@ export class GameApp {
     }
 
     let aimAngle: number | null = null;
-    if (this.aimMode === 'keyboard') {
+    if (this.aimMode === 'touch') {
+      if (this.touchAimActive) {
+        const camDir = new THREE.Vector3();
+        this.cameraRig.camera.getWorldDirection(camDir);
+        const camYaw = Math.atan2(camDir.x, camDir.z);
+        const fwdX = Math.sin(camYaw);
+        const fwdZ = Math.cos(camYaw);
+        const dirX = this.touchAimY * fwdX - this.touchAimX * fwdZ;
+        const dirZ = this.touchAimY * fwdZ + this.touchAimX * fwdX;
+        this.touchAimAngle = Math.atan2(dirX, dirZ);
+      }
+      aimAngle = this.touchAimAngle;
+    } else if (this.aimMode === 'keyboard') {
       // Left = counter-clockwise on screen, right = clockwise (matches the top-down camera)
       const aimDir =
         (this.keys.has('ArrowLeft') || this.keys.has('KeyQ') ? 1 : 0) -
@@ -2012,6 +2094,7 @@ export class GameApp {
   private finishMatch(victory: boolean, title: string, statsText: string, canNextStage: boolean): void {
     this.matchEnded = true;
     this.isLeftMouseDown = false;
+    this.releaseTouchInputs();
     this.sight.group.visible = false;
     if (victory) this.audio.playStageFanfare();
     this.ui.onMatchEnd(victory, title, statsText, canNextStage);
