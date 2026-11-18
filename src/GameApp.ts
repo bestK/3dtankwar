@@ -115,7 +115,12 @@ export class GameApp {
   private mouseNdc = new THREE.Vector2(0, 0);
   private aimWorldPoint = new THREE.Vector3(0, 0, 0);
   private hasMouseMoved = false;
+  private lastPointerX = -1;
+  private lastPointerY = -1;
+  private aimMode: 'mouse' | 'keyboard' = 'mouse';
+  private keyboardAimAngle = 0;
   private isLeftMouseDown = false;
+  private isSpaceDown = false;
   private isPaintingWorkshop = false;
   private chargeHoldSec = 0;
 
@@ -245,18 +250,44 @@ export class GameApp {
         this.cycleCameraPreset();
       } else if (e.code === 'Space' && this.isCombatMode()) {
         e.preventDefault();
-        this.tryFireLocal(false);
+        if (!e.repeat && this.cameraRig.preset !== 'orbit') {
+          this.isSpaceDown = true;
+        }
+      } else if (
+        this.isCombatMode() &&
+        (e.code === 'ArrowLeft' ||
+          e.code === 'ArrowRight' ||
+          e.code === 'KeyQ' ||
+          e.code === 'KeyE')
+      ) {
+        e.preventDefault();
+        if (this.aimMode !== 'keyboard' && this.localPlayer) {
+          this.keyboardAimAngle = this.localPlayer.turretAngle;
+        }
+        this.aimMode = 'keyboard';
       }
     });
 
     window.addEventListener('keyup', (e) => {
       this.keys.delete(e.code);
+      if (e.code === 'Space' && this.isSpaceDown) {
+        this.isSpaceDown = false;
+        if (this.isCombatMode() && this.cameraRig.preset !== 'orbit') {
+          this.tryFireLocal(this.chargeHoldSec >= 0.52);
+        }
+        this.chargeHoldSec = 0;
+        if (this.localPlayer) this.localPlayer.chargeRatio = 0;
+      }
     });
 
     this.renderer.domElement.addEventListener('pointermove', (e) => {
       this.mouseNdc.x = (e.clientX / window.innerWidth) * 2 - 1;
       this.mouseNdc.y = -(e.clientY / window.innerHeight) * 2 + 1;
       this.hasMouseMoved = true;
+      const pointerTravel = Math.hypot(e.clientX - this.lastPointerX, e.clientY - this.lastPointerY);
+      this.lastPointerX = e.clientX;
+      this.lastPointerY = e.clientY;
+      if (this.isCombatMode() && pointerTravel > 4) this.aimMode = 'mouse';
 
       if (this.mode === 'workshop') {
         this.updateWorkshopCursor();
@@ -277,6 +308,8 @@ export class GameApp {
           this.updateWorkshopCursor();
           this.paintAtWorkshopCursor(e.shiftKey);
         } else if (this.isCombatMode() && this.cameraRig.preset !== 'orbit') {
+          this.aimMode = 'mouse';
+          this.hasMouseMoved = true;
           this.isLeftMouseDown = true;
           this.chargeHoldSec = 0;
         }
@@ -336,6 +369,10 @@ export class GameApp {
     this.matchEnded = false;
     this.freezeTimer = 0;
     this.fortressTimer = 0;
+    this.aimMode = 'mouse';
+    this.isLeftMouseDown = false;
+    this.isSpaceDown = false;
+    this.chargeHoldSec = 0;
   }
 
   /** Autonomous live 3D tank battle diorama behind the Hero UI */
@@ -852,10 +889,10 @@ export class GameApp {
 
     let moveX = 0;
     let moveZ = 0;
-    if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) moveZ -= 1;
-    if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) moveZ += 1;
-    if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) moveX -= 1;
-    if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) moveX += 1;
+    if (this.keys.has('KeyW')) moveZ -= 1;
+    if (this.keys.has('KeyS')) moveZ += 1;
+    if (this.keys.has('KeyA')) moveX -= 1;
+    if (this.keys.has('KeyD')) moveX += 1;
 
     // Rotate WASD input relative to current camera azimuth so controls ALWAYS feel intuitive even after 360° camera orbit!
     let worldMoveX = moveX;
@@ -874,14 +911,21 @@ export class GameApp {
     }
 
     let aimAngle: number | null = null;
-    if (this.hasMouseMoved) {
+    if (this.aimMode === 'keyboard') {
+      // Left = counter-clockwise on screen, right = clockwise (matches the top-down camera)
+      const aimDir =
+        (this.keys.has('ArrowLeft') || this.keys.has('KeyQ') ? 1 : 0) -
+        (this.keys.has('ArrowRight') || this.keys.has('KeyE') ? 1 : 0);
+      if (aimDir !== 0) this.keyboardAimAngle += aimDir * 2.6 * dt;
+      aimAngle = this.keyboardAimAngle;
+    } else if (this.hasMouseMoved) {
       this.raycaster.setFromCamera(this.mouseNdc, this.cameraRig.camera);
       if (this.raycaster.ray.intersectPlane(this.groundPlane, this.aimWorldPoint)) {
         aimAngle = Math.atan2(this.aimWorldPoint.x - p.x, this.aimWorldPoint.z - p.z);
       }
     }
 
-    if (this.isLeftMouseDown) {
+    if (this.isLeftMouseDown || this.isSpaceDown) {
       this.chargeHoldSec += dt;
       p.chargeRatio = Math.min(1, this.chargeHoldSec / 0.55);
     } else {
@@ -1466,6 +1510,9 @@ export class GameApp {
       this.localPlayer.stars = 1;
       this.localPlayer.refreshWeaponVisuals();
       this.localPlayer.respawn(sx, sz, sa, 3.2);
+    }
+    if (this.aimMode === 'keyboard') {
+      this.keyboardAimAngle = this.localPlayer.turretAngle;
     }
   }
 
