@@ -93,6 +93,7 @@ export class GameApp {
   public pvpMapIndex = 0;
   public workshopBrush: TileType = TileType.BRICK;
   public slowMo = false;
+  public turretKeyTurnSpeed = 2.6; // rad/s for keyboard turret aiming
   public matchEnded = false;
 
   private customWorkshopGrid: Uint8Array | null = null;
@@ -916,7 +917,7 @@ export class GameApp {
       const aimDir =
         (this.keys.has('ArrowLeft') || this.keys.has('KeyQ') ? 1 : 0) -
         (this.keys.has('ArrowRight') || this.keys.has('KeyE') ? 1 : 0);
-      if (aimDir !== 0) this.keyboardAimAngle += aimDir * 2.6 * dt;
+      if (aimDir !== 0) this.keyboardAimAngle += aimDir * this.turretKeyTurnSpeed * dt;
       aimAngle = this.keyboardAimAngle;
     } else if (this.hasMouseMoved) {
       this.raycaster.setFromCamera(this.mouseNdc, this.cameraRig.camera);

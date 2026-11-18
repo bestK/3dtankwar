@@ -33,6 +33,10 @@ window.addEventListener('DOMContentLoaded', () => {
   const btnCamera = $('#btn-camera')!;
   const btnSlowmo = $('#btn-slowmo')!;
   const btnAudio = $('#btn-audio')!;
+  const btnSettings = $('#btn-settings')!;
+  const settingsPopover = $('#settings-popover')!;
+  const rangeTurretSpeed = $('#range-turret-speed') as HTMLInputElement;
+  const turretSpeedValue = $('#turret-speed-value')!;
 
   // Charge Bar & Toasts
   const chargeWrap = $('#charge-bar-wrap')!;
@@ -431,6 +435,41 @@ window.addEventListener('DOMContentLoaded', () => {
     btnAudio.textContent = next ? '音效' : '静音';
     showToast(next ? '音效系统已开启' : '音效已静音');
   };
+
+  // Settings: keyboard turret turn speed
+  const TURRET_SPEED_KEY = 'agy_tank_turret_speed';
+  const savedTurretSpeed = parseFloat(localStorage.getItem(TURRET_SPEED_KEY) || '');
+  if (Number.isFinite(savedTurretSpeed)) {
+    app.turretKeyTurnSpeed = Math.min(6, Math.max(1, savedTurretSpeed));
+  }
+  rangeTurretSpeed.value = app.turretKeyTurnSpeed.toFixed(1);
+  turretSpeedValue.textContent = app.turretKeyTurnSpeed.toFixed(1);
+  rangeTurretSpeed.addEventListener('input', () => {
+    const speed = Math.min(6, Math.max(1, parseFloat(rangeTurretSpeed.value)));
+    app.turretKeyTurnSpeed = speed;
+    turretSpeedValue.textContent = speed.toFixed(1);
+    localStorage.setItem(TURRET_SPEED_KEY, String(speed));
+  });
+
+  const closeSettings = () => {
+    settingsPopover.classList.add('hidden');
+    btnSettings.classList.remove('active');
+    btnSettings.setAttribute('aria-expanded', 'false');
+  };
+
+  btnSettings.onclick = () => {
+    const open = settingsPopover.classList.contains('hidden');
+    settingsPopover.classList.toggle('hidden', !open);
+    btnSettings.classList.toggle('active', open);
+    btnSettings.setAttribute('aria-expanded', String(open));
+  };
+
+  document.addEventListener('pointerdown', (e) => {
+    if (settingsPopover.classList.contains('hidden')) return;
+    const target = e.target as Node;
+    if (settingsPopover.contains(target) || btnSettings.contains(target)) return;
+    closeSettings();
+  });
 
   // Result Modal Actions
   btnResultNext.onclick = () => {
