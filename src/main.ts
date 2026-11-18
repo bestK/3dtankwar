@@ -117,7 +117,8 @@ window.addEventListener('DOMContentLoaded', () => {
   const campaignStageButtons = $all('.stage-pill');
   const btnStartCampaign = $('#btn-start-campaign')!;
 
-  const inputCallsign = $('#input-callsign') as HTMLInputElement;
+  const inputNickname = $('#input-nickname') as HTMLInputElement;
+  const btnSaveNickname = $('#btn-save-nickname')!;
   const inputRoom = $('#input-room') as HTMLInputElement;
   const btnJoinRoom = $('#btn-join-room')!;
   const btnQuickMatch = $('#btn-quick-match')!;
@@ -928,11 +929,28 @@ window.addEventListener('DOMContentLoaded', () => {
     input.addEventListener('change', saveTurnConfig);
   });
 
-  // Set callsign field
-  inputCallsign.value = app.net.callsign;
-  inputCallsign.addEventListener('change', () => {
-    app.net.setCallsign(inputCallsign.value);
+  // Nickname (persisted, shown in room roster / scoreboard / chat)
+  const saveNickname = (announce: boolean): void => {
+    const raw = inputNickname.value.trim().slice(0, 10);
+    if (!raw) {
+      inputNickname.value = app.net.callsign;
+      if (announce) showToast('昵称不能为空');
+      return;
+    }
+    app.net.setCallsign(raw);
+    inputNickname.value = app.net.callsign;
+    if (announce) showToast(`昵称已保存：${app.net.callsign}`);
+  };
+
+  inputNickname.value = app.net.callsign;
+  inputNickname.addEventListener('change', () => saveNickname(false));
+  inputNickname.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.isComposing) return;
+    e.preventDefault();
+    saveNickname(true);
+    inputNickname.blur();
   });
+  btnSaveNickname.onclick = () => saveNickname(true);
 
   // URL query params auto-join
   const urlParams = new URLSearchParams(window.location.search);

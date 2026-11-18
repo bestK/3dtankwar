@@ -58,6 +58,7 @@ export class MqttMultiplayer {
     this.callsign = trimmed;
     localStorage.setItem('agy_tank_callsign', trimmed);
     this.publishPresence();
+    this.emitRoster();
   }
 
   public setMod(selection: string): void {

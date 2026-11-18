@@ -482,6 +482,29 @@ button {
   letter-spacing: 0.1em;
 }
 
+.nickname-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.nickname-input {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  height: 32px;
+  font-family: var(--font-display);
+  font-size: 12px;
+}
+
+.nickname-save {
+  flex: none;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 11px;
+}
+
 .mod-row {
   display: flex;
   align-items: center;
@@ -603,10 +626,6 @@ button {
 
 .field-input:focus {
   border-color: var(--brass-gold);
-}
-
-.field-input.callsign {
-  width: 112px;
 }
 
 .room-input-group {
@@ -1338,6 +1357,15 @@ body.is-touch .mobile-controls {
     font-size: 0.55em;
   }
 
+  .nickname-row {
+    margin-bottom: 10px;
+  }
+
+  .nickname-input,
+  .nickname-save {
+    height: 36px;
+  }
+
   .mod-row {
     margin-bottom: 10px;
   }
@@ -1385,10 +1413,6 @@ body.is-touch .mobile-controls {
 
   .field-input {
     height: 38px;
-  }
-
-  .field-input.callsign {
-    width: 96px;
   }
 
   .room-input-group {

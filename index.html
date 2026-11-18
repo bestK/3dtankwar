@@ -155,6 +155,19 @@
       <div class="hero-dock">
         <h1 class="hero-title">装甲战线<span>1985</span></h1>
 
+        <div class="nickname-row">
+          <label class="mod-label" for="input-nickname">游戏昵称</label>
+          <input
+            id="input-nickname"
+            class="field-input nickname-input"
+            type="text"
+            maxlength="10"
+            autocomplete="nickname"
+            placeholder="输入昵称"
+          />
+          <button id="btn-save-nickname" class="tool-chip nickname-save">保存</button>
+        </div>
+
         <div class="mod-row">
           <label class="mod-label" for="select-mod">座驾 MOD</label>
           <select id="select-mod" class="field-input mod-select"></select>
@@ -185,7 +198,6 @@
         <!-- Online PvP / Co-op -->
         <div id="panel-online" class="mode-panel hidden">
           <div class="online-controls">
-            <input id="input-callsign" class="field-input callsign" type="text" maxlength="10" placeholder="呼号" />
             <div class="room-input-group">
               <span class="hash-prefix">#</span>
               <input id="input-room" class="field-input room-code" type="text" maxlength="8" value="1985" />
