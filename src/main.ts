@@ -1,5 +1,8 @@
 import './styles/main.css';
 import { GameApp, GameUiBridge, HudSnapshot } from './GameApp';
+import { isValidModSelection, loadVehicleMod, parseMod, VEHICLE_MODS } from './mod/ModCatalog';
+import { computeBrowserFingerprint } from './net/Fingerprint';
+import { VoiceChat } from './net/VoiceChat';
 import { PeerPresence, PublicRoomBeacon, TileType } from './types';
 
 function $(selector: string): HTMLElement | null {
@@ -33,6 +36,8 @@ window.addEventListener('DOMContentLoaded', () => {
   const btnCamera = $('#btn-camera')!;
   const btnSlowmo = $('#btn-slowmo')!;
   const btnAudio = $('#btn-audio')!;
+  const btnVoiceHud = $('#btn-voice')!;
+  const btnMuteHud = $('#btn-mute')!;
   const btnSettings = $('#btn-settings')!;
   const settingsPopover = $('#settings-popover')!;
   const rangeTurretSpeed = $('#range-turret-speed') as HTMLInputElement;
@@ -42,6 +47,22 @@ window.addEventListener('DOMContentLoaded', () => {
   const chargeWrap = $('#charge-bar-wrap')!;
   const chargeFill = $('#charge-bar-fill')!;
   const eventFeed = $('#event-feed')!;
+
+  // In-Battle Chat & Voice
+  const chatLog = $('#chat-log')!;
+  const chatBar = $('#chat-bar')!;
+  const chatInput = $('#chat-input') as HTMLInputElement;
+  const voiceToggles = $all('.voice-toggle');
+  const voiceMutes = $all('.voice-mute');
+  const voiceAudioRoot = $('#voice-audio-root')!;
+  const voiceSpeakingChip = $('#voice-speaking')!;
+  const voiceSpeakingNames = $('#voice-speaking-names')!;
+  const screenToggles = $all('.screen-toggle');
+  const screenPanel = $('#screen-panel')!;
+  const screenVideo = $('#screen-video') as HTMLVideoElement;
+  const screenCaption = $('#screen-caption')!;
+  const btnScreenHide = $('#btn-screen-hide')!;
+  const btnScreenHud = $('#btn-screen')!;
 
   // Workshop Sculpting Palette
   const workshopBar = $('#workshop-bar')!;
@@ -56,6 +77,9 @@ window.addEventListener('DOMContentLoaded', () => {
   const brokerPopover = $('#broker-popover')!;
   const selectBrokerUrl = $('#select-broker-url') as HTMLSelectElement;
   const btnBrokerReconnect = $('#btn-broker-reconnect')!;
+  const inputTurnUrl = $('#input-turn-url') as HTMLInputElement;
+  const inputTurnUser = $('#input-turn-user') as HTMLInputElement;
+  const inputTurnPass = $('#input-turn-pass') as HTMLInputElement;
   const netLed = $('#net-led')!;
   const netLabel = $('#net-label')!;
   const netPing = $('#net-ping')!;
@@ -64,6 +88,15 @@ window.addEventListener('DOMContentLoaded', () => {
   const panelCampaign = $('#panel-campaign')!;
   const panelOnline = $('#panel-online')!;
   const panelWorkshop = $('#panel-workshop')!;
+
+  const selectMod = $('#select-mod') as HTMLSelectElement;
+  const btnModFlip = $('#btn-mod-flip')!;
+  VEHICLE_MODS.forEach((mod) => {
+    const option = document.createElement('option');
+    option.value = mod.id;
+    option.textContent = mod.label;
+    selectMod.appendChild(option);
+  });
 
   const campaignStageButtons = $all('.stage-pill');
   const btnStartCampaign = $('#btn-start-campaign')!;
@@ -87,6 +120,15 @@ window.addEventListener('DOMContentLoaded', () => {
   const btnResultNext = $('#btn-result-next')!;
   const btnResultMenu = $('#btn-result-menu')!;
 
+  // Vote kick & fingerprint ban
+  const votePanel = $('#vote-panel')!;
+  const voteTitle = $('#vote-title')!;
+  const voteDetail = $('#vote-detail')!;
+  const btnVoteYes = $('#btn-vote-yes') as HTMLButtonElement;
+  const btnVoteNo = $('#btn-vote-no') as HTMLButtonElement;
+  const banBanner = $('#ban-banner')!;
+  let activeVoteId = '';
+
   let currentSelectedMode: 'campaign' | 'pvp' | 'coop' | 'workshop' = 'campaign';
   let selectedCampaignStage = 0;
   let selectedPvpMap = 0;
@@ -101,6 +143,87 @@ window.addEventListener('DOMContentLoaded', () => {
       toast.remove();
     }, 2900);
   };
+
+  const addChatMessage = (name: string, text: string, self: boolean) => {
+    const line = document.createElement('div');
+    line.className = `chat-line${self ? ' self' : ''}`;
+    const who = document.createElement('span');
+    who.className = 'chat-name';
+    who.textContent = name;
+    const body = document.createElement('span');
+    body.className = 'chat-text';
+    body.textContent = text;
+    line.append(who, body);
+    chatLog.appendChild(line);
+    while (chatLog.children.length > 6) chatLog.firstElementChild?.remove();
+  };
+
+  const openChat = () => {
+    if (chatBar.classList.contains('hidden')) {
+      chatInput.value = '';
+      chatBar.classList.remove('hidden');
+    }
+    chatInput.focus();
+  };
+
+  const closeChat = () => {
+    chatBar.classList.add('hidden');
+    chatInput.blur();
+  };
+
+  const peerNames = new Map<string, string>();
+  const speakingPeers = new Set<string>();
+
+  const applySpeakingHighlights = () => {
+    document.querySelectorAll<HTMLElement>('[data-peer]').forEach((el) => {
+      el.classList.toggle('speaking', speakingPeers.has(el.dataset.peer || ''));
+    });
+    const names = [...speakingPeers].map((id) => peerNames.get(id) || '玩家');
+    voiceSpeakingNames.textContent = names.join('、');
+    voiceSpeakingChip.classList.toggle('hidden', names.length === 0);
+  };
+
+  const setScreenUi = (sharing: boolean) => {
+    screenToggles.forEach((btn) => {
+      btn.textContent = sharing ? '投屏中' : '投屏';
+      btn.classList.toggle('active', sharing);
+    });
+  };
+
+  const addKickButton = (parent: HTMLElement, peerId: string, label = '投票') => {
+    if (peerId === app.net.peerId) return;
+    const kick = document.createElement('button');
+    kick.className = 'kick-btn';
+    kick.textContent = label;
+    kick.title = '发起投票踢出该玩家，通过后 10 分钟内禁止其浏览器进入';
+    kick.onclick = (e) => {
+      e.stopPropagation();
+      if (!app.startVoteKick(peerId)) showToast('当前已有投票进行中');
+    };
+    parent.appendChild(kick);
+  };
+
+  const setVoiceUi = (state: { active: boolean; pending: boolean; muted: boolean }) => {
+    const label = state.pending ? '连接中…' : state.active ? '语音中' : '语音';
+    voiceToggles.forEach((btn) => {
+      btn.textContent = label;
+      btn.classList.toggle('active', state.active && !state.pending);
+      (btn as HTMLButtonElement).disabled = state.pending;
+    });
+    voiceMutes.forEach((btn) => {
+      btn.classList.toggle('hidden', !state.active);
+      btn.textContent = state.muted ? '开麦' : '闭麦';
+      btn.classList.toggle('active', state.muted);
+    });
+    if (!state.active && !state.pending) {
+      speakingPeers.clear();
+      applySpeakingHighlights();
+    }
+  };
+
+  const isOnlineLobby = () =>
+    !heroOverlay.classList.contains('hidden') &&
+    (currentSelectedMode === 'pvp' || currentSelectedMode === 'coop');
 
   const copyRoomLink = (roomId: string) => {
     const url = new URL(window.location.href);
@@ -119,9 +242,17 @@ window.addEventListener('DOMContentLoaded', () => {
       if (hud.mode === 'demo') {
         hudTop.classList.add('hidden');
         chargeWrap.classList.add('hidden');
+        if (!chatBar.classList.contains('hidden')) closeChat();
+        if (chatLog.firstChild) chatLog.innerHTML = '';
         return;
       }
       hudTop.classList.remove('hidden');
+
+      // Voice is an online-room feature only
+      const voiceAvailable = hud.mode === 'pvp' || hud.mode === 'coop';
+      btnVoiceHud.classList.toggle('hidden', !voiceAvailable);
+      btnMuteHud.classList.toggle('hidden', !voiceAvailable || !app.voice.active);
+      btnScreenHud.classList.toggle('hidden', !voiceAvailable);
 
       // Stage & wave
       if (hud.mode === 'campaign' || hud.mode === 'coop') {
@@ -202,25 +333,32 @@ window.addEventListener('DOMContentLoaded', () => {
       peers.forEach((p) => {
         const item = document.createElement('div');
         item.className = 'lobby-player' + (p.peerId === hostId ? ' host' : '');
+        item.dataset.peer = p.peerId;
         const colHex = '#' + p.color.toString(16).padStart(6, '0');
         item.innerHTML = `<span class="swatch" style="background:${colHex}"></span><span>${p.name}${p.peerId === app.net.peerId ? ' (你)' : ''}</span>${p.peerId === hostId ? ' 👑' : ''}`;
+        addKickButton(item, p.peerId);
         lobbyRoster.appendChild(item);
       });
 
-      // Combat HUD scoreboard (for PvP)
-      if (app.mode === 'pvp') {
+      // Combat HUD scoreboard (PvP and Co-op)
+      if (app.mode === 'pvp' || app.mode === 'coop') {
         hudScoreboard.classList.remove('hidden');
         hudScoreboard.innerHTML = '';
         peers.forEach((p) => {
           const pill = document.createElement('div');
           pill.className = 'roster-pill';
+          pill.dataset.peer = p.peerId;
           const colHex = '#' + p.color.toString(16).padStart(6, '0');
           pill.innerHTML = `<span class="roster-swatch" style="background:${colHex}"></span><span>${p.name}</span><span class="roster-kills">${p.kills} 击毁</span>`;
+          addKickButton(pill, p.peerId, '踢');
           hudScoreboard.appendChild(pill);
         });
       } else {
         hudScoreboard.classList.add('hidden');
       }
+
+      peers.forEach((p) => peerNames.set(p.peerId, p.name));
+      applySpeakingHighlights();
     },
 
     onPublicRooms: (rooms: PublicRoomBeacon[]) => {
@@ -230,9 +368,12 @@ window.addEventListener('DOMContentLoaded', () => {
         btn.className = 'room-beacon';
         btn.innerHTML = `<span>#${r.roomId}</span><span>[${r.mode === 'pvp' ? '死斗' : '守卫'}]</span><span>${r.count}人</span>`;
         btn.onclick = () => {
+          if (!ensureCanEnter()) return;
           inputRoom.value = r.roomId;
           setModeTab(r.mode);
-          app.net.joinRoom(r.roomId, r.mode);
+          joinRoomWithVoice(r.roomId, r.mode);
+          closeChat();
+          chatLog.innerHTML = '';
           showToast(`已切换至公开房间 #${r.roomId}`);
         };
         activeRoomsStrip.appendChild(btn);
@@ -250,16 +391,387 @@ window.addEventListener('DOMContentLoaded', () => {
       canNextStageAction = canNext;
       btnResultNext.textContent = canNext ? '下一战区' : '重新出击';
       resultModal.classList.remove('hidden');
+      closeChat();
     },
 
     onOnlineMatchStarted: (_mode: 'pvp' | 'coop') => {
       heroOverlay.classList.add('hidden');
       workshopBar.classList.add('hidden');
       resultModal.classList.add('hidden');
+      closeChat();
+      chatLog.innerHTML = '';
+    },
+
+    onChatMessage: (name: string, text: string, self: boolean) => {
+      if (!app.isCombatMode() && !isOnlineLobby()) return;
+      addChatMessage(name, text, self);
+    },
+
+    onKicked: (msg: string, banUntil?: number) => {
+      heroOverlay.classList.remove('hidden');
+      workshopBar.classList.add('hidden');
+      resultModal.classList.add('hidden');
+      hudTop.classList.add('hidden');
+      votePanel.classList.add('hidden');
+      closeChat();
+      chatLog.innerHTML = '';
+      const until = banUntil ?? Date.now() + BAN_MS;
+      const applyBan = (fp: string) => banFingerprint(fp, until);
+      if (browserFp) applyBan(browserFp);
+      else {
+        void computeBrowserFingerprint().then((fp) => {
+          browserFp = fp;
+          applyBan(fp);
+        });
+      }
+      app.startHeroDemo();
+      showToast(msg);
+    },
+
+    onFingerprintBan: (fp: string, until: number) => {
+      banFingerprint(fp, until);
+    },
+
+    onVoteUpdate: (state) => {
+      if (!state) {
+        activeVoteId = '';
+        votePanel.classList.add('hidden');
+        return;
+      }
+      activeVoteId = state.voteId;
+      votePanel.classList.remove('hidden');
+      voteTitle.textContent = state.isInitiator
+        ? `你发起投票踢出 ${state.targetName}`
+        : `投票踢出 ${state.targetName}`;
+      const remaining = Math.max(0, Math.ceil((state.until - Date.now()) / 1000));
+      voteDetail.textContent = `同意 ${state.yes} / 需要 ${state.required} · 反对 ${state.no} · 剩余 ${remaining}s${state.voted ? ' · 你已投票' : ''}`;
+      btnVoteYes.disabled = state.voted;
+      btnVoteNo.disabled = state.voted;
     },
   };
 
   const app = new GameApp(canvasRoot, uiBridge);
+
+  // Fingerprint vote-ban (10 minutes, stored per browser)
+  const BAN_KEY = 'agy_tank_bans_v1';
+  const BAN_MS = 10 * 60 * 1000;
+  type BanRecord = { fp: string; until: number };
+  let browserFp = '';
+  let banTicker: number | null = null;
+
+  const loadBans = (): BanRecord[] => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(BAN_KEY) || '[]') as BanRecord[];
+      const now = Date.now();
+      return Array.isArray(raw)
+        ? raw.filter((record) => record && typeof record.fp === 'string' && record.until > now)
+        : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const saveBans = (bans: BanRecord[]) => {
+    try {
+      localStorage.setItem(BAN_KEY, JSON.stringify(bans));
+    } catch {
+      // Storage can be unavailable in private/incognito mode.
+    }
+  };
+
+  const bannedUntilFor = (fp: string): number => {
+    if (!fp) return 0;
+    return loadBans().find((record) => record.fp === fp)?.until || 0;
+  };
+
+  const formatRemaining = (ms: number): string => {
+    const total = Math.ceil(ms / 1000);
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+  };
+
+  const updateBanBanner = () => {
+    if (!browserFp) return;
+    const until = bannedUntilFor(browserFp);
+    const remaining = until - Date.now();
+    if (remaining > 0) {
+      banBanner.classList.remove('hidden');
+      banBanner.textContent = `该浏览器已被投票移出，剩余 ${formatRemaining(remaining)} 后才能进入`;
+      if (banTicker === null) banTicker = window.setInterval(updateBanBanner, 1000);
+    } else {
+      banBanner.classList.add('hidden');
+      if (banTicker !== null) {
+        clearInterval(banTicker);
+        banTicker = null;
+      }
+    }
+  };
+
+  const banFingerprint = (fp: string, until: number) => {
+    if (!fp) return;
+    const bans = loadBans();
+    const existing = bans.find((record) => record.fp === fp);
+    if (existing) existing.until = Math.max(existing.until, until);
+    else bans.push({ fp, until });
+    saveBans(bans.filter((record) => record.until > Date.now()));
+    app.net.banFingerprint(fp, until);
+    if (fp === browserFp) updateBanBanner();
+  };
+
+  const ensureCanEnter = (): boolean => {
+    if (browserFp && bannedUntilFor(browserFp) > Date.now()) {
+      updateBanBanner();
+      showToast('该浏览器仍处于踢出冷却中');
+      return false;
+    }
+    return true;
+  };
+
+  void computeBrowserFingerprint().then((fp) => {
+    browserFp = fp;
+    app.net.setFingerprint(fp);
+    for (const ban of loadBans()) app.net.banFingerprint(ban.fp, ban.until);
+    updateBanBanner();
+  });
+
+  btnVoteYes.onclick = () => {
+    if (activeVoteId) app.castVote(activeVoteId, true);
+  };
+  btnVoteNo.onclick = () => {
+    if (activeVoteId) app.castVote(activeVoteId, false);
+  };
+
+  // In-battle chat
+  let chatComposing = false;
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.isComposing) return;
+    const target = e.target as HTMLElement | null;
+    if (
+      target &&
+      (target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
+        target.isContentEditable)
+    ) {
+      return;
+    }
+    const canChat = app.isCombatMode() ? !app.matchEnded : isOnlineLobby();
+    if (!canChat) return;
+    e.preventDefault();
+    openChat();
+  });
+
+  chatInput.addEventListener('compositionstart', () => {
+    chatComposing = true;
+  });
+  chatInput.addEventListener('compositionend', () => {
+    chatComposing = false;
+  });
+  chatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.isComposing && !chatComposing && e.keyCode !== 229) {
+      e.preventDefault();
+      const text = chatInput.value;
+      chatInput.value = '';
+      closeChat();
+      app.sendChat(text, !app.isCombatMode() && isOnlineLobby());
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      chatInput.value = '';
+      closeChat();
+    }
+  });
+
+  // Voice chat (WebRTC mesh, signaling over the room MQTT channel)
+  app.voice.onStatusChange = setVoiceUi;
+  app.voice.onRemoteStream = (peerId, stream) => {
+    let audio = document.getElementById(`voice-audio-${peerId}`) as HTMLAudioElement | null;
+    if (!audio) {
+      audio = document.createElement('audio');
+      audio.id = `voice-audio-${peerId}`;
+      audio.autoplay = true;
+      audio.setAttribute('playsinline', '');
+      voiceAudioRoot.appendChild(audio);
+    }
+    audio.srcObject = stream;
+    void audio.play().catch(() => {
+      // Autoplay can be blocked until the next user gesture.
+    });
+  };
+  app.voice.onRemoteGone = (peerId) => {
+    document.getElementById(`voice-audio-${peerId}`)?.remove();
+    speakingPeers.delete(peerId);
+    applySpeakingHighlights();
+  };
+  app.voice.onSpeakingChange = (peerId, speaking) => {
+    if (speaking) speakingPeers.add(peerId);
+    else speakingPeers.delete(peerId);
+    applySpeakingHighlights();
+  };
+  setVoiceUi({ active: false, pending: false, muted: false });
+
+  const toggleVoice = async () => {
+    if (app.voice.active) {
+      app.voice.disable();
+      return;
+    }
+    if (app.voice.busy) return;
+    if (!VoiceChat.supported) {
+      showToast('当前浏览器不支持 WebRTC 语音');
+      return;
+    }
+    try {
+      await app.voice.enable();
+      showToast('语音已开启');
+    } catch {
+      showToast('无法开启语音，请允许麦克风权限');
+    }
+  };
+
+  voiceToggles.forEach((btn) => {
+    btn.onclick = () => void toggleVoice();
+  });
+  voiceMutes.forEach((btn) => {
+    btn.onclick = () => app.voice.toggleMute();
+  });
+
+  // Screen casting
+  const isOnlineContext = () =>
+    app.mode === 'pvp' || app.mode === 'coop' || isOnlineLobby();
+
+  const hideScreenPanel = () => {
+    screenVideo.srcObject = null;
+    screenPanel.classList.add('hidden');
+  };
+
+  app.screen.onStatusChange = setScreenUi;
+  app.screen.onRemoteStarted = (peerId, name) => {
+    if (!isOnlineContext()) return;
+    screenCaption.textContent = `${peerNames.get(peerId) || name || '玩家'} 的投屏`;
+    screenPanel.classList.remove('hidden');
+  };
+  app.screen.onRemoteStream = (_peerId, stream) => {
+    if (!isOnlineContext()) return;
+    screenVideo.srcObject = stream;
+    screenPanel.classList.remove('hidden');
+    void screenVideo.play().catch(() => {
+      // Autoplay is best-effort; the video becomes playable on the next click.
+    });
+  };
+  app.screen.onRemoteStopped = () => hideScreenPanel();
+  setScreenUi(false);
+  btnScreenHide.onclick = () => hideScreenPanel();
+
+  const toggleScreen = async () => {
+    if (app.screen.sharing) {
+      app.screen.stop();
+      return;
+    }
+    if (app.screen.busy) return;
+    if (!app.screen.supported) {
+      showToast('当前浏览器不支持投屏');
+      return;
+    }
+    const peers = app.net
+      .getPeersSorted()
+      .filter((p) => p.peerId !== app.net.peerId)
+      .map((p) => p.peerId);
+    try {
+      await app.screen.start(peers, app.net.callsign);
+    } catch {
+      showToast('投屏已取消或当前不可用');
+    }
+  };
+  screenToggles.forEach((btn) => {
+    btn.onclick = () => void toggleScreen();
+  });
+
+  // Vehicle mod selection (applies to the player and is shared via presence)
+  const MOD_KEY = 'agy_tank_mod';
+  let currentMod = localStorage.getItem(MOD_KEY) || 'default';
+  if (!isValidModSelection(currentMod)) currentMod = 'default';
+
+  const applyModSelection = (selection: string, persist = true) => {
+    const { mod, flip } = parseMod(selection);
+    currentMod = mod ? `${mod.id}${flip ? ':flip' : ''}` : 'default';
+    selectMod.value = mod?.id || 'default';
+    btnModFlip.classList.toggle('active', flip);
+    (btnModFlip as HTMLButtonElement).disabled = !mod;
+    if (persist) localStorage.setItem(MOD_KEY, currentMod);
+    app.setPlayerMod(currentMod);
+    if (mod) void loadVehicleMod(currentMod);
+  };
+
+  applyModSelection(currentMod, false);
+  selectMod.addEventListener('change', () => applyModSelection(selectMod.value));
+  btnModFlip.addEventListener('click', () => {
+    const { mod, flip } = parseMod(currentMod);
+    if (!mod) return;
+    applyModSelection(`${mod.id}${flip ? '' : ':flip'}`);
+  });
+
+  const joinRoomWithVoice = (roomId: string, mode: 'pvp' | 'coop') => {
+    const target = roomId.trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) || '1985';
+    if (app.net.roomId !== target) {
+      app.voice.disable();
+      app.screen.reset();
+    }
+    app.net.joinRoom(roomId, mode);
+  };
+
+  // TURN relay configuration (persisted per browser)
+  const TURN_KEY = 'agy_tank_turn';
+  const DEFAULT_TURN = {
+    url: 'turn:120.24.190.16:3479?transport=udp turn:120.24.190.16:3479?transport=tcp',
+    user: 'tankgame',
+    pass: '4bd6023db768dc9e305cae90f47db609',
+  };
+  try {
+    const savedTurn = JSON.parse(localStorage.getItem(TURN_KEY) || 'null') as {
+      url?: string;
+      user?: string;
+      pass?: string;
+    } | null;
+    inputTurnUrl.value = savedTurn?.url ?? DEFAULT_TURN.url;
+    inputTurnUser.value = savedTurn?.user ?? DEFAULT_TURN.user;
+    inputTurnPass.value = savedTurn?.pass ?? DEFAULT_TURN.pass;
+  } catch {
+    inputTurnUrl.value = DEFAULT_TURN.url;
+    inputTurnUser.value = DEFAULT_TURN.user;
+    inputTurnPass.value = DEFAULT_TURN.pass;
+  }
+
+  const applyTurnConfig = () => {
+    const raw = inputTurnUrl.value.trim();
+    if (!raw) {
+      app.voice.setTurnConfig(null);
+      return;
+    }
+    const urls = raw
+      .split(/[\s,]+/)
+      .filter(Boolean)
+      .map((url) => (/^turns?:/i.test(url) ? url : `turn:${url}`));
+    app.voice.setTurnConfig({
+      urls: urls.length === 1 ? urls[0] : urls,
+      username: inputTurnUser.value.trim() || undefined,
+      credential: inputTurnPass.value || undefined,
+    });
+  };
+
+  applyTurnConfig();
+  const saveTurnConfig = () => {
+    applyTurnConfig();
+    localStorage.setItem(
+      TURN_KEY,
+      JSON.stringify({
+        url: inputTurnUrl.value.trim(),
+        user: inputTurnUser.value.trim(),
+        pass: inputTurnPass.value,
+      }),
+    );
+    if (app.voice.active) showToast('TURN 已更新，重新开启语音后生效');
+  };
+  [inputTurnUrl, inputTurnUser, inputTurnPass].forEach((input) => {
+    input.addEventListener('change', saveTurnConfig);
+  });
 
   // Set callsign field
   inputCallsign.value = app.net.callsign;
@@ -304,7 +816,12 @@ window.addEventListener('DOMContentLoaded', () => {
     }
 
     if (mode === 'pvp' || mode === 'coop') {
-      app.net.joinRoom(inputRoom.value || '1985', mode);
+      if (ensureCanEnter()) joinRoomWithVoice(inputRoom.value || '1985', mode);
+    } else {
+      if (app.voice.active) app.voice.disable();
+      app.screen.reset();
+      closeChat();
+      chatLog.innerHTML = '';
     }
   };
 
@@ -326,6 +843,7 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   btnStartCampaign.onclick = () => {
+    if (!ensureCanEnter()) return;
     heroOverlay.classList.add('hidden');
     workshopBar.classList.add('hidden');
     resultModal.classList.add('hidden');
@@ -343,23 +861,31 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Online Room Controls
   btnJoinRoom.onclick = () => {
+    if (!ensureCanEnter()) return;
     const raw = inputRoom.value.trim() || '1985';
-    app.net.joinRoom(raw, currentSelectedMode === 'coop' ? 'coop' : 'pvp');
+    joinRoomWithVoice(raw, currentSelectedMode === 'coop' ? 'coop' : 'pvp');
+    closeChat();
+    chatLog.innerHTML = '';
     showToast(`已进入房间 #${app.net.roomId}`);
   };
 
   btnQuickMatch.onclick = () => {
+    if (!ensureCanEnter()) return;
     const publicList = app.net.getPublicRooms();
     if (publicList.length > 0) {
       const target = publicList[0];
       inputRoom.value = target.roomId;
       setModeTab(target.mode);
-      app.net.joinRoom(target.roomId, target.mode);
+      joinRoomWithVoice(target.roomId, target.mode);
+      closeChat();
+      chatLog.innerHTML = '';
       showToast(`已匹配至活跃房间 #${target.roomId}`);
     } else {
       const randRoom = Math.floor(1000 + Math.random() * 8999).toString();
       inputRoom.value = randRoom;
-      app.net.joinRoom(randRoom, currentSelectedMode === 'coop' ? 'coop' : 'pvp');
+      joinRoomWithVoice(randRoom, currentSelectedMode === 'coop' ? 'coop' : 'pvp');
+      closeChat();
+      chatLog.innerHTML = '';
       showToast(`已创建公开战区 #${randRoom}`);
     }
   };
@@ -368,16 +894,20 @@ window.addEventListener('DOMContentLoaded', () => {
   btnCopyRoom.onclick = () => copyRoomLink(app.net.roomId);
 
   btnStartOnline.onclick = () => {
+    if (!ensureCanEnter()) return;
     const isPvp = currentSelectedMode === 'pvp';
     app.hostStartOnlineMatch(isPvp ? 'pvp' : 'coop', isPvp ? selectedPvpMap : selectedCampaignStage);
   };
 
   // Workshop Entry & Controls
   btnEnterWorkshop.onclick = () => {
+    if (!ensureCanEnter()) return;
     heroOverlay.classList.add('hidden');
     workshopBar.classList.remove('hidden');
     hudTop.classList.add('hidden');
     resultModal.classList.add('hidden');
+    closeChat();
+    chatLog.innerHTML = '';
     app.enterWorkshop();
     showToast('沙盘工坊已就绪：左键绘制，右键360°旋转，Shift精细点选');
   };
@@ -411,6 +941,9 @@ window.addEventListener('DOMContentLoaded', () => {
     heroOverlay.classList.remove('hidden');
     workshopBar.classList.add('hidden');
     resultModal.classList.add('hidden');
+    app.screen.reset();
+    closeChat();
+    chatLog.innerHTML = '';
     app.startHeroDemo();
   };
 
@@ -493,6 +1026,9 @@ window.addEventListener('DOMContentLoaded', () => {
     resultModal.classList.add('hidden');
     heroOverlay.classList.remove('hidden');
     workshopBar.classList.add('hidden');
+    app.screen.reset();
+    closeChat();
+    chatLog.innerHTML = '';
     app.startHeroDemo();
   };
 });

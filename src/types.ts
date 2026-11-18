@@ -45,6 +45,8 @@ export interface PeerPresence {
   kills: number;
   score: number;
   lastSeen: number;
+  mod?: string;
+  fp?: string;
 }
 
 export interface NetTankSnapshot {
@@ -78,6 +80,49 @@ export interface NetFireEvent {
   dmg: number;
   heavy: boolean;
   pierceSteel: boolean;
+}
+
+export interface NetChatEvent {
+  t: 'chat';
+  name: string;
+  text: string;
+}
+
+export type VoiceSignal =
+  | { kind: 'offer'; sdp: string }
+  | { kind: 'answer'; sdp: string }
+  | { kind: 'candidate'; candidate: RTCIceCandidateInit };
+
+export interface NetVoiceEvent {
+  t: 'voice';
+  action: 'state' | 'signal';
+  on?: boolean;
+  to?: string;
+  signal?: VoiceSignal;
+}
+
+export interface NetScreenEvent {
+  t: 'screen';
+  action: 'start' | 'stop' | 'offer' | 'answer' | 'candidate';
+  shareId: string;
+  name?: string;
+  to?: string;
+  sdp?: string;
+  candidate?: RTCIceCandidateInit;
+}
+
+export interface NetVoteEvent {
+  t: 'vote';
+  action: 'start' | 'cast' | 'result';
+  voteId: string;
+  target: string;
+  initiator?: string;
+  voter?: string;
+  yes?: boolean;
+  until?: number;
+  passed?: boolean;
+  fp?: string;
+  banUntil?: number;
 }
 
 export interface NetMapDamageEvent {
@@ -125,6 +170,10 @@ export interface NetAiSyncEvent {
 
 export type NetRoomEvent =
   | NetFireEvent
+  | NetChatEvent
+  | NetVoiceEvent
+  | NetScreenEvent
+  | NetVoteEvent
   | NetMapDamageEvent
   | NetHitEvent
   | NetStartEvent

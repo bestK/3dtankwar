@@ -51,6 +51,10 @@
           <button id="btn-camera" class="tool-chip">沙盘视角</button>
           <button id="btn-slowmo" class="tool-chip">子弹时间</button>
           <button id="btn-audio" class="tool-chip active">音效</button>
+          <div id="voice-speaking" class="voice-speaking hidden"><span id="voice-speaking-names"></span></div>
+          <button id="btn-voice" class="tool-chip voice-toggle">语音</button>
+          <button id="btn-mute" class="tool-chip voice-mute hidden">闭麦</button>
+          <button id="btn-screen" class="tool-chip screen-toggle">投屏</button>
           <button id="btn-settings" class="tool-chip" aria-expanded="false">设置</button>
         </div>
 
@@ -112,11 +116,40 @@
             </select>
             <button id="btn-broker-reconnect" class="tool-chip">重连</button>
           </div>
+          <div class="broker-row">
+            <input
+              id="input-turn-url"
+              class="field-input turn-url"
+              type="text"
+              placeholder="TURN 地址，如 turn:你的域名:3478"
+            />
+          </div>
+          <div class="broker-row">
+            <input
+              id="input-turn-user"
+              class="field-input turn-cred"
+              type="text"
+              placeholder="TURN 用户名"
+            />
+            <input
+              id="input-turn-pass"
+              class="field-input turn-cred"
+              type="password"
+              placeholder="TURN 密码"
+            />
+          </div>
+          <p class="broker-hint">留空则仅用 STUN；修改后重新开启语音生效</p>
         </div>
       </div>
 
       <div class="hero-dock">
         <h1 class="hero-title">装甲战线<span>1985</span></h1>
+
+        <div class="mod-row">
+          <label class="mod-label" for="select-mod">座驾 MOD</label>
+          <select id="select-mod" class="field-input mod-select"></select>
+          <button id="btn-mod-flip" class="tool-chip mod-flip" title="翻转车头方向">翻转</button>
+        </div>
 
         <nav class="mode-tabs" role="tablist">
           <button class="mode-tab active" data-mode="campaign">单人战役</button>
@@ -150,6 +183,9 @@
             <button id="btn-join-room" class="tool-chip accent">切换房间</button>
             <button id="btn-quick-match" class="tool-chip">快速匹配</button>
             <button id="btn-share-link" class="tool-chip">复制邀请</button>
+            <button id="btn-voice-lobby" class="tool-chip voice-toggle">语音</button>
+            <button id="btn-mute-lobby" class="tool-chip voice-mute hidden">闭麦</button>
+            <button id="btn-screen-lobby" class="tool-chip screen-toggle">投屏</button>
           </div>
 
           <div id="pvp-map-strip" class="stage-pills compact-gap">
@@ -175,6 +211,19 @@
       </div>
     </section>
 
+    <!-- Vote Kick -->
+    <div id="vote-panel" class="vote-panel hidden">
+      <div id="vote-title" class="vote-title">投票踢出</div>
+      <div id="vote-detail" class="vote-detail"></div>
+      <div class="vote-actions">
+        <button id="btn-vote-yes" class="cta-chip compact">同意</button>
+        <button id="btn-vote-no" class="tool-chip">反对</button>
+      </div>
+    </div>
+
+    <!-- Fingerprint ban banner -->
+    <div id="ban-banner" class="ban-banner hidden"></div>
+
     <!-- Result Modal -->
     <section id="result-modal" class="result-modal hidden">
       <div class="result-card">
@@ -187,13 +236,36 @@
       </div>
     </section>
 
+    <!-- In-Battle Chat & Voice Audio -->
+    <div id="voice-audio-root" class="hidden"></div>
+    <div id="screen-panel" class="screen-panel hidden">
+      <div class="screen-head">
+        <span id="screen-caption">玩家投屏</span>
+        <button id="btn-screen-hide" class="mini-action">收起</button>
+      </div>
+      <video id="screen-video" autoplay playsinline muted></video>
+    </div>
+    <div id="chat-log" class="chat-log" aria-live="polite"></div>
+    <div id="chat-bar" class="chat-bar hidden">
+      <input
+        id="chat-input"
+        class="chat-input"
+        type="text"
+        maxlength="120"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+        placeholder="输入消息 · Enter 发送 · Esc 关闭"
+      />
+    </div>
+
     <!-- Bottom Controls Strip -->
     <footer id="controls-hint" class="controls-hint">
       <span><kbd>WASD</kbd> 驾驶</span>
       <span><kbd>← →</kbd> / <kbd>Q E</kbd> 旋转炮塔</span>
       <span><kbd>空格</kbd> / <kbd>左键</kbd> 开炮 · 长按蓄力穿甲</span>
       <span><kbd>右键拖拽</kbd> 360°自由视角</span>
-      <span><kbd>滚轮</kbd> 缩放 · <kbd>Tab</kbd> 子弹时间</span>
+      <span><kbd>滚轮</kbd> 缩放 · <kbd>Tab</kbd> 子弹时间 · <kbd>Enter</kbd> 聊天</span>
     </footer>
 
     <script type="module" src="/src/main.ts"></script>

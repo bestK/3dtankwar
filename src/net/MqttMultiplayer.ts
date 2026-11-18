@@ -22,6 +22,8 @@ export class MqttMultiplayer {
   public readonly peerId: string;
   public readonly joinedAt: number;
   public callsign: string;
+  public mod = 'default';
+  public fingerprint = '';
   public roomId = '1985';
   public mode: 'pvp' | 'coop' = 'pvp';
   public brokerUrl = 'wss://broker.emqx.io:8084/mqtt';
@@ -32,6 +34,8 @@ export class MqttMultiplayer {
   private peers = new Map<string, PeerPresence>();
   private publicRooms = new Map<string, PublicRoomBeacon>();
   private subscribedRoom: string | null = null;
+  private blockedPeers = new Set<string>();
+  private bannedFingerprints = new Map<string, number>();
 
   private seq = 0;
   private myKills = 0;
@@ -54,6 +58,36 @@ export class MqttMultiplayer {
     this.callsign = trimmed;
     localStorage.setItem('agy_tank_callsign', trimmed);
     this.publishPresence();
+  }
+
+  public setMod(selection: string): void {
+    this.mod = selection || 'default';
+    this.publishPresence();
+  }
+
+  public setFingerprint(fp: string): void {
+    this.fingerprint = fp || '';
+    this.publishPresence();
+  }
+
+  public banFingerprint(fp: string, until: number): void {
+    if (!fp) return;
+    const previous = this.bannedFingerprints.get(fp) ?? 0;
+    if (until > previous) this.bannedFingerprints.set(fp, until);
+    for (const peer of [...this.peers.values()]) {
+      if (peer.fp === fp) this.blockPeer(peer.peerId);
+    }
+  }
+
+  private isFingerprintBanned(fp?: string): boolean {
+    if (!fp) return false;
+    const until = this.bannedFingerprints.get(fp);
+    if (!until) return false;
+    if (Date.now() >= until) {
+      this.bannedFingerprints.delete(fp);
+      return false;
+    }
+    return true;
   }
 
   public setLocalStats(kills: number, score: number): void {
@@ -130,6 +164,7 @@ export class MqttMultiplayer {
 
   public joinRoom(rawRoomId: string, mode: 'pvp' | 'coop'): void {
     const clean = rawRoomId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) || '1985';
+    if (this.roomId !== clean) this.blockedPeers.clear();
     if (this.subscribedRoom && this.subscribedRoom !== clean && this.client?.connected) {
       this.client.publish(
         `${TOPIC_PREFIX}/leave`,
@@ -178,6 +213,27 @@ export class MqttMultiplayer {
     const sorted = this.getPeersSorted();
     const me = sorted.find((p) => p.peerId === this.peerId);
     return me ? me.slot : 0;
+  }
+
+  public blockPeer(peerId: string): void {
+    if (!peerId || peerId === this.peerId) return;
+    this.blockedPeers.add(peerId);
+    this.peers.delete(peerId);
+    this.emitRoster();
+  }
+
+  public leaveRoom(): void {
+    if (this.subscribedRoom && this.client?.connected) {
+      this.client.publish(
+        `${TOPIC_PREFIX}/leave`,
+        JSON.stringify({ peerId: this.peerId, roomId: this.subscribedRoom }),
+      );
+      this.client.unsubscribe(`${TOPIC_PREFIX}/r/${this.subscribedRoom}/#`);
+    }
+    this.subscribedRoom = null;
+    this.roomId = 'x' + Math.random().toString(36).slice(2, 8);
+    this.peers.clear();
+    this.emitRoster();
   }
 
   public publishTankState(snap: NetTankSnapshot): void {
@@ -241,6 +297,8 @@ export class MqttMultiplayer {
       kills: this.myKills,
       score: this.myScore,
       lastSeen: Date.now(),
+      mod: this.mod,
+      fp: this.fingerprint,
     });
   }
 
@@ -263,6 +321,8 @@ export class MqttMultiplayer {
       mode: this.mode,
       kills: this.myKills,
       score: this.myScore,
+      mod: this.mod,
+      fp: this.fingerprint,
     };
     this.client.publish(
       `${TOPIC_PREFIX}/r/${this.roomId}/pres/${this.peerId}`,
@@ -352,7 +412,7 @@ export class MqttMultiplayer {
 
       if (sub === 'hello') {
         const { peerId } = JSON.parse(raw) as { peerId: string };
-        if (peerId && peerId !== this.peerId) {
+        if (peerId && peerId !== this.peerId && !this.blockedPeers.has(peerId)) {
           this.publishPresence();
           if (this.isHost()) {
             this.cb.onPeerJoinedLate?.(peerId);
@@ -363,7 +423,11 @@ export class MqttMultiplayer {
 
       if (sub.startsWith('pres/')) {
         const p = JSON.parse(raw) as Omit<PeerPresence, 'slot' | 'color' | 'lastSeen'>;
-        if (!p.peerId || p.peerId === this.peerId) return;
+        if (!p.peerId || p.peerId === this.peerId || this.blockedPeers.has(p.peerId)) return;
+        if (this.isFingerprintBanned(p.fp)) {
+          if (this.peers.has(p.peerId)) this.blockPeer(p.peerId);
+          return;
+        }
         const isNew = !this.peers.has(p.peerId);
         this.peers.set(p.peerId, {
           peerId: p.peerId,
@@ -375,6 +439,8 @@ export class MqttMultiplayer {
           kills: p.kills || 0,
           score: p.score || 0,
           lastSeen: Date.now(),
+          mod: p.mod || 'default',
+          fp: p.fp || '',
         });
         if (isNew) {
           this.emitRoster();
@@ -386,11 +452,12 @@ export class MqttMultiplayer {
 
       if (sub.startsWith('st/')) {
         const senderId = sub.slice(3);
-        if (senderId === this.peerId) return;
+        if (senderId === this.peerId || this.blockedPeers.has(senderId)) return;
+        const peer = this.peers.get(senderId);
+        if (!peer || this.isFingerprintBanned(peer.fp)) return;
         const arr = JSON.parse(raw) as number[];
         if (!Array.isArray(arr) || arr.length < 15) return;
-        const peer = this.peers.get(senderId);
-        if (peer) peer.lastSeen = Date.now();
+        peer.lastSeen = Date.now();
         this.cb.onRemoteState(senderId, {
           seq: arr[0],
           x: arr[1],
@@ -413,7 +480,9 @@ export class MqttMultiplayer {
 
       if (sub === 'ev') {
         const { s, e } = JSON.parse(raw) as { s: string; e: NetRoomEvent };
-        if (s === this.peerId) return;
+        if (s === this.peerId || this.blockedPeers.has(s)) return;
+        const peer = this.peers.get(s);
+        if (e.t !== 'start' && (!peer || this.isFingerprintBanned(peer.fp))) return;
         this.cb.onRoomEvent(e, s);
       }
     } catch {

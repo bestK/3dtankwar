@@ -29,8 +29,10 @@ export class Tank {
   public name: string;
 
   public readonly root = new THREE.Group();
+  public modSelection = 'default';
   private hullYawGroup = new THREE.Group();
   private suspensionGroup = new THREE.Group();
+  private modGroup = new THREE.Group();
   private turretGroup = new THREE.Group();
   private gunRecoilGroup = new THREE.Group();
   private antennaPivot = new THREE.Group();
@@ -78,6 +80,8 @@ export class Tank {
   private trackDistAccum = 0;
   private smokeAccum = 0;
   private baseColorHex: number;
+  private cheatGlow = false;
+  private cheatLight?: THREE.PointLight;
 
   // Remote network target state
   private netX = 0;
@@ -202,6 +206,7 @@ export class Tank {
 
     this.root.add(this.hullYawGroup);
     this.hullYawGroup.add(this.suspensionGroup);
+    this.hullYawGroup.add(this.modGroup);
     this.hullYawGroup.scale.setScalar(scaleFactor);
 
     // 1. Track Housings & Road Wheels
@@ -494,6 +499,49 @@ export class Tank {
     this.rollVel += Math.sin(relAngle) * (heavy ? 4.4 : 2.2);
   }
 
+  public setModModel(model: THREE.Object3D | null, yaw = 0): void {
+    this.modGroup.clear();
+    if (!model) {
+      this.suspensionGroup.visible = true;
+      return;
+    }
+
+    const holder = new THREE.Group();
+    holder.rotation.y = yaw;
+    holder.add(model);
+    holder.updateMatrixWorld(true);
+
+    const rawSize = new THREE.Box3().setFromObject(holder).getSize(new THREE.Vector3());
+    let scale = 1.9 / Math.max(rawSize.x, rawSize.z, 0.001);
+    if (rawSize.y * scale > 1.6) scale = 1.6 / Math.max(rawSize.y, 0.001);
+    holder.scale.setScalar(scale);
+    holder.updateMatrixWorld(true);
+
+    const box = new THREE.Box3().setFromObject(holder);
+    const center = box.getCenter(new THREE.Vector3());
+    holder.position.set(-center.x, -box.min.y + 0.02, -center.z);
+
+    this.modGroup.add(holder);
+    this.suspensionGroup.visible = false;
+  }
+
+  public setCheatGlow(enabled: boolean): void {
+    this.cheatGlow = enabled;
+    if (enabled) {
+      if (!this.cheatLight) {
+        this.cheatLight = new THREE.PointLight(0xff2a14, 0, 7.5, 2);
+        this.cheatLight.position.set(0, 0.9, 0);
+        this.root.add(this.cheatLight);
+      }
+      this.primaryMat.emissive.setHex(0xff2208);
+      this.cheatLight.intensity = 14;
+    } else {
+      this.primaryMat.emissive.setHex(0x000000);
+      this.primaryMat.emissiveIntensity = 1;
+      if (this.cheatLight) this.cheatLight.intensity = 0;
+    }
+  }
+
   public takeDamage(dmg: number): boolean {
     if (!this.alive || this.shieldTimer > 0) return false;
     this.hp = Math.max(0, this.hp - dmg);
@@ -775,6 +823,13 @@ export class Tank {
     // Muzzle thermal glow + charge coil glow
     this.muzzleMat.emissiveIntensity = this.barrelHeat * 2.2 + this.chargeRatio * 3.0;
     this.railCoils.visible = this.stars >= 3 || this.chargeRatio > 0.15;
+
+    // Cheat-mode crimson pulse
+    if (this.cheatGlow && this.cheatLight) {
+      const aura = 0.72 + Math.sin(performance.now() * 0.018) * 0.28;
+      this.primaryMat.emissiveIntensity = 2.6 * aura;
+      this.cheatLight.intensity = 22 * aura;
+    }
 
     // Bonus carrier beacon pulse
     if (this.bonusBeacon) {

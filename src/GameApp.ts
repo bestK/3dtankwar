@@ -6,7 +6,10 @@ import { createProceduralTextures, TextureBundle } from './engine/ProceduralText
 import { PowerUpItem } from './entities/PowerUp';
 import { BallisticSight, createProjectileMesh, ProjectileData } from './entities/Projectile';
 import { Tank } from './entities/Tank';
+import { loadVehicleMod, parseMod } from './mod/ModCatalog';
 import { MqttMultiplayer } from './net/MqttMultiplayer';
+import { ScreenShare } from './net/ScreenShare';
+import { VoiceChat } from './net/VoiceChat';
 import {
   CameraPreset,
   ENEMY_COLORS,
@@ -47,6 +50,17 @@ export interface HudSnapshot {
   cameraPreset: CameraPreset;
 }
 
+export interface VoteUiState {
+  voteId: string;
+  targetName: string;
+  yes: number;
+  no: number;
+  required: number;
+  until: number;
+  voted: boolean;
+  isInitiator: boolean;
+}
+
 export interface GameUiBridge {
   onHudUpdate: (hud: HudSnapshot) => void;
   onNetStatus: (status: 'connecting' | 'online' | 'offline', url: string, ping: number | null) => void;
@@ -55,6 +69,25 @@ export interface GameUiBridge {
   onToast: (msg: string) => void;
   onMatchEnd: (victory: boolean, title: string, statsText: string, canNextStage: boolean) => void;
   onOnlineMatchStarted: (mode: 'pvp' | 'coop') => void;
+  onChatMessage: (name: string, text: string, self: boolean) => void;
+  onKicked: (msg: string, banUntil?: number) => void;
+  onVoteUpdate: (state: VoteUiState | null) => void;
+  onFingerprintBan: (fp: string, until: number) => void;
+}
+
+interface ActiveVoteState {
+  id: string;
+  targetId: string;
+  targetName: string;
+  targetFp: string;
+  initiatorId: string;
+  until: number;
+  yes: Set<string>;
+  no: Set<string>;
+  required: number;
+  resolved: boolean;
+  passed: boolean;
+  timer: number;
 }
 
 const PVP_SPAWNS: Array<[number, number, number]> = [
@@ -87,6 +120,8 @@ export class GameApp {
   public readonly vfx: VfxSystem;
   public readonly audio = new AudioSynth();
   public readonly net: MqttMultiplayer;
+  public readonly voice: VoiceChat;
+  public readonly screen: ScreenShare;
 
   public mode: GameMode = 'demo';
   public stageIndex = 0;
@@ -94,6 +129,7 @@ export class GameApp {
   public workshopBrush: TileType = TileType.BRICK;
   public slowMo = false;
   public turretKeyTurnSpeed = 2.6; // rad/s for keyboard turret aiming
+  public playerMod = 'default';
   public matchEnded = false;
 
   private customWorkshopGrid: Uint8Array | null = null;
@@ -124,6 +160,10 @@ export class GameApp {
   private isSpaceDown = false;
   private isPaintingWorkshop = false;
   private chargeHoldSec = 0;
+  private cheatBuffer = '';
+  private cheatActive = false;
+  private cheatCooldown = 0;
+  private activeVote: ActiveVoteState | null = null;
 
   private raycaster = new THREE.Raycaster();
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.5);
@@ -174,9 +214,13 @@ export class GameApp {
     this.post = new PostPipeline(this.renderer, this.scene, this.cameraRig.camera, w, h);
 
     this.net = new MqttMultiplayer({
-      onConnectionChange: (st, url, ping) => this.ui.onNetStatus(st, url, ping),
+      onConnectionChange: (st, url, ping) => {
+        this.ui.onNetStatus(st, url, ping);
+        if (st === 'online') this.voice?.refresh();
+      },
       onRosterChange: (peers, hostId) => {
         this.syncRemoteRoster(peers);
+        for (const p of peers) this.screen?.addPeer(p.peerId);
         this.ui.onRosterUpdate(peers, hostId);
       },
       onPublicRoomsChange: (rooms) => this.ui.onPublicRooms(rooms),
@@ -197,6 +241,15 @@ export class GameApp {
         }
       },
     });
+
+    this.voice = new VoiceChat(this.net.peerId, (evt) =>
+      this.net.publishEvent(evt, evt.action === 'signal'),
+    );
+    this.screen = new ScreenShare(
+      this.net.peerId,
+      (evt) => this.net.publishEvent(evt, evt.action !== 'candidate'),
+      () => this.voice.iceServers(),
+    );
 
     this.bindInputs();
     this.startHeroDemo();
@@ -244,6 +297,23 @@ export class GameApp {
       if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
       this.keys.add(e.code);
 
+      // Cheat code: type "woshinidie" (我是你爹) during combat
+      const typedLetter = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : '';
+      if (
+        typedLetter &&
+        this.isCombatMode() &&
+        !this.matchEnded &&
+        !e.repeat &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.metaKey
+      ) {
+        this.cheatBuffer = (this.cheatBuffer + typedLetter).slice(-16);
+        if (!this.cheatActive && this.cheatBuffer.endsWith('woshinidie')) {
+          this.activateCheat();
+        }
+      }
+
       if (e.code === 'Tab') {
         e.preventDefault();
         this.toggleSlowMo();
@@ -252,7 +322,11 @@ export class GameApp {
       } else if (e.code === 'Space' && this.isCombatMode()) {
         e.preventDefault();
         if (!e.repeat && this.cameraRig.preset !== 'orbit') {
-          this.isSpaceDown = true;
+          if (this.cheatActive) {
+            this.fireCheatBarrage();
+          } else {
+            this.isSpaceDown = true;
+          }
         }
       } else if (
         this.isCombatMode() &&
@@ -335,6 +409,292 @@ export class GameApp {
     return this.mode === 'campaign' || this.mode === 'pvp' || this.mode === 'coop';
   }
 
+  public setPlayerMod(selection: string): void {
+    this.playerMod = selection;
+    this.net.setMod(selection);
+    if (this.localPlayer) this.applyModToTank(this.localPlayer, selection);
+  }
+
+  private applyModToTank(tank: Tank, selection: string): void {
+    tank.modSelection = selection;
+    const { mod, flip } = parseMod(selection);
+    if (!mod) {
+      tank.setModModel(null);
+      return;
+    }
+    const yaw = (mod.yaw ?? 0) + (flip ? Math.PI : 0);
+    void loadVehicleMod(selection).then((scene) => {
+      if (scene && tank.modSelection === selection) {
+        tank.setModModel(scene.clone(true), yaw);
+      }
+    });
+  }
+
+  public startVoteKick(targetId: string): boolean {
+    if (this.mode !== 'pvp' && this.mode !== 'coop' && this.mode !== 'demo') return false;
+    if (!targetId || targetId === this.net.peerId) return false;
+    if (this.activeVote && !this.activeVote.resolved) return false;
+
+    const peers = this.net.getPeersSorted();
+    const target = peers.find((p) => p.peerId === targetId);
+    if (!target) return false;
+
+    const eligible = peers.filter((p) => p.peerId !== targetId).length;
+    const required = Math.max(1, Math.floor(eligible / 2) + 1);
+    const vote: ActiveVoteState = {
+      id: `${this.net.peerId}_${Date.now()}`,
+      targetId,
+      targetName: target.name || '玩家',
+      targetFp: target.fp || '',
+      initiatorId: this.net.peerId,
+      until: Date.now() + 20000,
+      yes: new Set([this.net.peerId]),
+      no: new Set(),
+      required,
+      resolved: false,
+      passed: false,
+      timer: 0,
+    };
+    this.activeVote = vote;
+    this.net.publishEvent(
+      {
+        t: 'vote',
+        action: 'start',
+        voteId: vote.id,
+        target: targetId,
+        initiator: this.net.peerId,
+        until: vote.until,
+        fp: vote.targetFp,
+      },
+      true,
+    );
+    this.ui.onToast(`已发起投票踢出 ${vote.targetName}`);
+    this.beginVoteTimer(vote);
+    this.evaluateVote(vote);
+    return true;
+  }
+
+  public castVote(voteId: string, yes: boolean): void {
+    const vote = this.activeVote;
+    if (!vote || vote.id !== voteId || vote.resolved) return;
+    if (vote.targetId === this.net.peerId) return;
+    if (vote.yes.has(this.net.peerId) || vote.no.has(this.net.peerId)) return;
+
+    (yes ? vote.yes : vote.no).add(this.net.peerId);
+    this.net.publishEvent(
+      {
+        t: 'vote',
+        action: 'cast',
+        voteId,
+        target: vote.targetId,
+        voter: this.net.peerId,
+        yes,
+      },
+      true,
+    );
+    this.evaluateVote(vote);
+  }
+
+  private handleVoteEvent(evt: Extract<NetRoomEvent, { t: 'vote' }>, senderId: string): void {
+    const voteId = String(evt.voteId || '');
+    const targetId = String(evt.target || '');
+    if (!voteId || !targetId) return;
+
+    if (evt.action === 'start') {
+      if (this.activeVote && !this.activeVote.resolved) return;
+      const peers = this.net.getPeersSorted();
+      const target = peers.find((p) => p.peerId === targetId);
+      if (!target && targetId !== this.net.peerId) return;
+
+      const fallbackEligible = peers.filter((p) => p.peerId !== targetId).length;
+      const vote: ActiveVoteState = {
+        id: voteId,
+        targetId,
+        targetName: target?.name || '玩家',
+        targetFp:
+          targetId === this.net.peerId ? this.net.fingerprint : target?.fp || '',
+        initiatorId: senderId,
+        until: Date.now() + 20000,
+        yes: new Set([senderId]),
+        no: new Set(),
+        required: Math.max(1, Math.floor(fallbackEligible / 2) + 1),
+        resolved: false,
+        passed: false,
+        timer: 0,
+      };
+      this.activeVote = vote;
+      if (targetId === this.net.peerId) {
+        this.ui.onToast('有人发起了对你的投票踢出');
+      }
+      this.beginVoteTimer(vote);
+      this.emitVoteUi(vote);
+      this.evaluateVote(vote);
+      return;
+    }
+
+    if (evt.action === 'cast') {
+      const vote = this.activeVote;
+      if (!vote || vote.id !== voteId || vote.resolved) return;
+      if (senderId === vote.targetId) return;
+      if (evt.yes) vote.yes.add(senderId);
+      else vote.no.add(senderId);
+      this.evaluateVote(vote);
+      return;
+    }
+
+    if (evt.action === 'result') {
+      const vote = this.activeVote;
+      if (!vote || vote.id !== voteId) return;
+
+      const knownPass = vote.yes.size >= vote.required;
+      const knownFail = vote.no.size >= vote.required || Date.now() >= vote.until;
+      if (evt.passed ? !knownPass : !knownFail) return;
+
+      const banUntil = Date.now() + 10 * 60 * 1000;
+      if (vote.resolved) {
+        // A passed result wins a race against a local timeout.
+        if (evt.passed && !vote.passed) {
+          vote.passed = true;
+          this.executeVoteKick(vote.targetId, vote.targetName, vote.targetFp, banUntil);
+        }
+        return;
+      }
+
+      vote.resolved = true;
+      vote.passed = Boolean(evt.passed);
+      clearInterval(vote.timer);
+      if (this.activeVote === vote) this.activeVote = null;
+      this.emitVoteUi(null);
+
+      if (vote.passed) {
+        this.executeVoteKick(vote.targetId, vote.targetName, vote.targetFp, banUntil);
+      } else {
+        this.ui.onToast(`投票未通过：${vote.targetName} 未被移出`);
+      }
+    }
+  }
+
+  private beginVoteTimer(vote: ActiveVoteState): void {
+    if (vote.timer) clearInterval(vote.timer);
+    vote.timer = window.setInterval(() => {
+      if (!this.activeVote || this.activeVote.id !== vote.id || vote.resolved) {
+        clearInterval(vote.timer);
+        return;
+      }
+      this.evaluateVote(vote);
+    }, 500);
+  }
+
+  private evaluateVote(vote: ActiveVoteState): void {
+    if (vote.resolved) return;
+
+    if (vote.yes.size >= vote.required) {
+      this.resolveVote(vote, true);
+      return;
+    }
+    if (vote.no.size >= vote.required) {
+      this.resolveVote(vote, false);
+      return;
+    }
+    if (Date.now() >= vote.until) {
+      this.resolveVote(vote, false);
+      return;
+    }
+    this.emitVoteUi(vote);
+  }
+
+  private resolveVote(vote: ActiveVoteState, passed: boolean): void {
+    if (vote.resolved) return;
+    vote.resolved = true;
+    vote.passed = passed;
+    clearInterval(vote.timer);
+    if (this.activeVote === vote) this.activeVote = null;
+    this.emitVoteUi(null);
+
+    const banUntil = Date.now() + 10 * 60 * 1000;
+    this.net.publishEvent(
+      {
+        t: 'vote',
+        action: 'result',
+        voteId: vote.id,
+        target: vote.targetId,
+        passed,
+        fp: vote.targetFp,
+        banUntil,
+      },
+      true,
+    );
+
+    if (passed) {
+      this.executeVoteKick(vote.targetId, vote.targetName, vote.targetFp, banUntil);
+    } else {
+      this.ui.onToast(`投票未通过：${vote.targetName} 未被移出`);
+    }
+  }
+
+  private executeVoteKick(
+    targetId: string,
+    targetName: string,
+    fingerprint: string,
+    banUntil: number,
+  ): void {
+    if (fingerprint) {
+      this.net.banFingerprint(fingerprint, banUntil);
+      this.ui.onFingerprintBan(fingerprint, banUntil);
+    }
+
+    if (targetId === this.net.peerId) {
+      this.voice.disable();
+      this.screen.reset();
+      this.net.leaveRoom();
+      this.ui.onKicked('你已被投票移出房间，10 分钟内无法进入', banUntil);
+      return;
+    }
+
+    this.voice.dropPeer(targetId);
+    this.screen.dropPeer(targetId);
+    this.net.blockPeer(targetId);
+    this.ui.onToast(`${targetName} 已被投票移出`);
+  }
+
+  private emitVoteUi(vote: ActiveVoteState | null): void {
+    if (!vote || vote.targetId === this.net.peerId) {
+      this.ui.onVoteUpdate(null);
+      return;
+    }
+    const me = this.net.peerId;
+    this.ui.onVoteUpdate({
+      voteId: vote.id,
+      targetName: vote.targetName,
+      yes: vote.yes.size,
+      no: vote.no.size,
+      required: vote.required,
+      until: vote.until,
+      voted: vote.yes.has(me) || vote.no.has(me),
+      isInitiator: vote.initiatorId === me,
+    });
+  }
+
+  private clearVote(): void {
+    if (this.activeVote) clearInterval(this.activeVote.timer);
+    this.activeVote = null;
+    this.ui.onVoteUpdate(null);
+  }
+
+  public sendChat(raw: string, allowLobby = false): void {
+    if ((!this.isCombatMode() || this.matchEnded) && !allowLobby) return;
+    const text = raw
+      .replace(/[\u0000-\u001f\u007f]/g, ' ')
+      .trim()
+      .slice(0, 120);
+    if (!text) return;
+    const name = (this.net.callsign || '装甲兵').slice(0, 12);
+    this.ui.onChatMessage(name, text, true);
+    if (this.mode === 'pvp' || this.mode === 'coop' || allowLobby) {
+      this.net.publishEvent({ t: 'chat', name, text });
+    }
+  }
+
   public cycleCameraPreset(): CameraPreset {
     const order: CameraPreset[] = ['diorama', 'chase', 'orbit'];
     const next = order[(order.indexOf(this.cameraRig.preset) + 1) % order.length];
@@ -374,6 +734,10 @@ export class GameApp {
     this.isLeftMouseDown = false;
     this.isSpaceDown = false;
     this.chargeHoldSec = 0;
+    this.cheatBuffer = '';
+    this.cheatActive = false;
+    this.cheatCooldown = 0;
+    this.clearVote();
   }
 
   /** Autonomous live 3D tank battle diorama behind the Hero UI */
@@ -432,6 +796,7 @@ export class GameApp {
     );
     this.localPlayer.respawn(-4.0, 11.5, Math.PI, 3.2);
     this.scene.add(this.localPlayer.root);
+    this.applyModToTank(this.localPlayer, this.playerMod);
     this.sight.group.visible = true;
 
     this.buildWaveQueue(16 + stageIdx * 2);
@@ -509,6 +874,7 @@ export class GameApp {
     );
     this.localPlayer.respawn(sx, sz, sAngle, 3.0);
     this.scene.add(this.localPlayer.root);
+    this.applyModToTank(this.localPlayer, this.playerMod);
     this.sight.group.visible = true;
     this.net.setLocalStats(0, 0);
 
@@ -590,10 +956,11 @@ export class GameApp {
 
     for (const p of peers) {
       if (p.peerId === this.net.peerId) continue;
-      if (!this.remotePlayers.has(p.peerId)) {
+      let rt = this.remotePlayers.get(p.peerId);
+      if (!rt) {
         const spawns = this.mode === 'pvp' ? PVP_SPAWNS : COOP_SPAWNS;
         const [sx, sz, sa] = spawns[p.slot % spawns.length];
-        const rt = new Tank(
+        rt = new Tank(
           {
             id: p.peerId,
             team: this.mode === 'pvp' ? 'enemy' : 'player',
@@ -607,6 +974,8 @@ export class GameApp {
         this.scene.add(rt.root);
         this.remotePlayers.set(p.peerId, rt);
       }
+      const mod = p.mod || 'default';
+      if (rt.modSelection !== mod) this.applyModToTank(rt, mod);
     }
   }
 
@@ -618,10 +987,32 @@ export class GameApp {
     }
   }
 
-  private handleRoomEvent(evt: NetRoomEvent, _senderId: string): void {
+  private handleRoomEvent(evt: NetRoomEvent, senderId: string): void {
     if (evt.t === 'start') {
       const grid = decodeGrid(evt.gridHex);
       this.beginOnlineSession(evt.mode, evt.mapIndex, grid);
+      return;
+    }
+
+    if (evt.t === 'chat') {
+      const text = String(evt.text ?? '').trim().slice(0, 120);
+      const name = String(evt.name ?? '装甲兵').slice(0, 12);
+      if (text) this.ui.onChatMessage(name, text, false);
+      return;
+    }
+
+    if (evt.t === 'voice') {
+      this.voice.handleEvent(evt, senderId);
+      return;
+    }
+
+    if (evt.t === 'screen') {
+      this.screen.handleEvent(evt, senderId);
+      return;
+    }
+
+    if (evt.t === 'vote') {
+      this.handleVoteEvent(evt, senderId);
       return;
     }
 
@@ -728,6 +1119,82 @@ export class GameApp {
       if (!seen.has(this.aiTanks[i].id)) {
         this.scene.remove(this.aiTanks[i].root);
         this.aiTanks.splice(i, 1);
+      }
+    }
+  }
+
+  private activateCheat(): void {
+    const p = this.localPlayer;
+    if (!p || this.cheatActive) return;
+    this.cheatActive = true;
+    this.cheatBuffer = '';
+    p.setCheatGlow(true);
+    this.audio.playPowerUp();
+    this.cameraRig.addTrauma(0.35);
+    this.ui.onToast('金手指启动：车身红光 · 空格倾泻全屏弹幕');
+  }
+
+  private fireCheatBarrage(): void {
+    const p = this.localPlayer;
+    if (!p || !p.alive || this.matchEnded || this.cheatCooldown > 0) return;
+    this.cheatCooldown = 0.5;
+
+    const count = 32;
+    const speed = 27;
+    const dmg = 3;
+    const color = 0xff3a1e;
+    const stamp = Date.now();
+    const muzzle = p.getMuzzleWorldPosition();
+
+    p.triggerRecoil(true);
+    this.vfx.spawnMuzzleBlast(
+      muzzle.x,
+      muzzle.y,
+      muzzle.z,
+      Math.sin(p.turretAngle),
+      Math.cos(p.turretAngle),
+      true,
+    );
+    this.cameraRig.addDirectionalKick(Math.sin(p.turretAngle), Math.cos(p.turretAngle), 0.6);
+    this.cameraRig.addTrauma(0.8);
+    this.audio.playCannon(true, 1.0);
+    this.shockPulse = 0.6;
+
+    for (let i = 0; i < count; i++) {
+      const angle = (i / count) * Math.PI * 2;
+      const px = p.x + Math.sin(angle) * 0.95;
+      const pz = p.z + Math.cos(angle) * 0.95;
+      const projId = `${this.net.peerId}_cheat_${stamp}_${i}`;
+
+      this.spawnProjectile({
+        id: projId,
+        ownerId: p.id,
+        team: 'player',
+        color,
+        x: px,
+        z: pz,
+        angle,
+        speed,
+        dmg,
+        heavy: true,
+        pierceSteel: true,
+      });
+
+      if (this.mode === 'pvp' || this.mode === 'coop') {
+        this.net.publishEvent({
+          t: 'fire',
+          id: projId,
+          owner: p.id,
+          team: 'player',
+          color,
+          x: Number(px.toFixed(2)),
+          z: Number(pz.toFixed(2)),
+          angle: Number(angle.toFixed(3)),
+          speed,
+          dmg,
+          heavy: true,
+          pierceSteel: true,
+        });
       }
     }
   }
@@ -1571,6 +2038,7 @@ export class GameApp {
     const dt = rawDt * simScale;
     this.elapsed += dt;
     this.shockPulse = Math.max(0, this.shockPulse - rawDt * 1.9);
+    this.cheatCooldown = Math.max(0, this.cheatCooldown - rawDt);
 
     if (this.isCombatMode()) {
       this.updateLocalPlayer(dt);
