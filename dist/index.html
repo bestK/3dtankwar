@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>装甲战线 1985 · 3D 坦克大战</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=Noto+Sans+SC:wght@500;700;900&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='6' y='6' width='52' height='52' rx='8' fill='%23141b24' stroke='%23d99b30' stroke-width='4'/%3E%3Crect x='14' y='18' width='10' height='32' rx='2' fill='%23b58024'/%3E%3Crect x='40' y='18' width='10' height='32' rx='2' fill='%23b58024'/%3E%3Crect x='22' y='22' width='20' height='24' rx='3' fill='%23d99b30'/%3E%3Crect x='29' y='8' width='6' height='22' rx='2' fill='%23ffbe4f'/%3E%3C/svg%3E"
+    />
+    <script type="module" crossorigin src="./assets/index-BgTadmsM.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-D9yzGkxQ.css">
+  </head>
+  <body>
+    <div id="canvas-root"></div>
+
+    <!-- Top Tactical Bar -->
+    <header id="hud-top" class="hud-top hidden">
+      <div class="hud-cluster">
+        <button id="btn-home" class="icon-chip" title="返回主菜单" aria-label="返回主菜单">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4">
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+        </button>
+        <div id="hud-stage-pill" class="stat-chip brass">第 01 关</div>
+        <div id="hud-enemy-strip" class="pip-strip" aria-label="敌军波次"></div>
+        <div id="hud-room-chip" class="stat-chip net hidden">
+          <span id="hud-net-dot" class="net-dot online"></span>
+          <span id="hud-room-code">#1985</span>
+          <span id="hud-net-ping" class="net-ping">--</span>
+          <button id="btn-copy-room" class="mini-action">复制邀请</button>
+        </div>
+      </div>
+
+      <div id="hud-scoreboard" class="hud-roster hidden"></div>
+
+      <div class="hud-cluster right">
+        <div id="hud-player-status" class="player-vitals">
+          <div class="hp-track"><div id="hud-hp-fill" class="hp-fill"></div></div>
+          <div id="hud-lives" class="lives-strip"></div>
+          <div id="hud-stars" class="stars-strip">★</div>
+          <div id="hud-score" class="score-num">000000</div>
+        </div>
+
+        <div class="tool-strip">
+          <button id="btn-camera" class="tool-chip">沙盘视角</button>
+          <button id="btn-slowmo" class="tool-chip">子弹时间</button>
+          <button id="btn-audio" class="tool-chip active">音效</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Rail-Piercer Charge Bar -->
+    <div id="charge-bar-wrap" class="charge-wrap hidden">
+      <div id="charge-bar-fill" class="charge-fill"></div>
+    </div>
+
+    <!-- Event Feed -->
+    <div id="event-feed" class="event-feed"></div>
+
+    <!-- Workshop Sculpting Palette -->
+    <div id="workshop-bar" class="workshop-bar hidden">
+      <button class="brush-chip active" data-brush="1"><span class="swatch brick"></span>红砖</button>
+      <button class="brush-chip" data-brush="2"><span class="swatch steel"></span>钢铁</button>
+      <button class="brush-chip" data-brush="3"><span class="swatch water"></span>水道</button>
+      <button class="brush-chip" data-brush="4"><span class="swatch forest"></span>密林</button>
+      <button class="brush-chip" data-brush="5"><span class="swatch ice"></span>冰原</button>
+      <button class="brush-chip" data-brush="0"><span class="swatch erase"></span>清除</button>
+      <span class="bar-sep"></span>
+      <button id="btn-ws-template" class="tool-chip">经典布局</button>
+      <button id="btn-ws-clear" class="tool-chip">清空</button>
+      <button id="btn-ws-play" class="cta-chip compact">实弹演练</button>
+    </div>
+
+    <!-- Hero & Online Lobby Overlay -->
+    <section id="hero-overlay" class="hero-overlay">
+      <div class="hero-top-status">
+        <button id="btn-broker-toggle" class="net-pill">
+          <span id="net-led" class="net-dot connecting"></span>
+          <span id="net-label">broker.emqx.io</span>
+          <span id="net-ping" class="net-ping">--</span>
+        </button>
+
+        <div id="broker-popover" class="broker-popover hidden">
+          <div class="broker-row">
+            <select id="select-broker-url" class="field-input">
+              <option value="wss://broker.emqx.io:8084/mqtt">wss://broker.emqx.io:8084/mqtt</option>
+              <option value="ws://broker.emqx.io:8083/mqtt">ws://broker.emqx.io:8083/mqtt</option>
+            </select>
+            <button id="btn-broker-reconnect" class="tool-chip">重连</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="hero-dock">
+        <h1 class="hero-title">装甲战线<span>1985</span></h1>
+
+        <nav class="mode-tabs" role="tablist">
+          <button class="mode-tab active" data-mode="campaign">单人战役</button>
+          <button class="mode-tab" data-mode="pvp">联机死斗</button>
+          <button class="mode-tab" data-mode="coop">联机守卫</button>
+          <button class="mode-tab" data-mode="workshop">沙盘工坊</button>
+        </nav>
+
+        <!-- Solo Campaign -->
+        <div id="panel-campaign" class="mode-panel">
+          <div class="stage-pills" id="campaign-stage-list">
+            <button class="stage-pill active" data-stage="0">01 经典防线</button>
+            <button class="stage-pill" data-stage="1">02 运河铁壁</button>
+            <button class="stage-pill" data-stage="2">03 极寒冰堡</button>
+            <button class="stage-pill" data-stage="3">04 密林伏击</button>
+            <button class="stage-pill" data-stage="4">05 双子要塞</button>
+          </div>
+          <div class="hero-actions">
+            <button id="btn-start-campaign" class="cta-chip">披挂出击</button>
+          </div>
+        </div>
+
+        <!-- Online PvP / Co-op -->
+        <div id="panel-online" class="mode-panel hidden">
+          <div class="online-controls">
+            <input id="input-callsign" class="field-input callsign" type="text" maxlength="10" placeholder="呼号" />
+            <div class="room-input-group">
+              <span class="hash-prefix">#</span>
+              <input id="input-room" class="field-input room-code" type="text" maxlength="8" value="1985" />
+            </div>
+            <button id="btn-join-room" class="tool-chip accent">切换房间</button>
+            <button id="btn-quick-match" class="tool-chip">快速匹配</button>
+            <button id="btn-share-link" class="tool-chip">复制邀请</button>
+          </div>
+
+          <div id="pvp-map-strip" class="stage-pills compact-gap">
+            <button class="pvp-map-pill active" data-pvpmap="0">钢铁十字</button>
+            <button class="pvp-map-pill" data-pvpmap="1">运河对决</button>
+            <button class="pvp-map-pill" data-pvpmap="2">冰封竞技场</button>
+          </div>
+
+          <div id="active-rooms-strip" class="rooms-strip"></div>
+          <div id="lobby-roster" class="lobby-roster"></div>
+
+          <div class="hero-actions">
+            <button id="btn-start-online" class="cta-chip">全员出击</button>
+          </div>
+        </div>
+
+        <!-- Workshop -->
+        <div id="panel-workshop" class="mode-panel hidden">
+          <div class="hero-actions">
+            <button id="btn-enter-workshop" class="cta-chip">构筑战场</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Result Modal -->
+    <section id="result-modal" class="result-modal hidden">
+      <div class="result-card">
+        <h2 id="result-title" class="result-title">防线肃清</h2>
+        <div id="result-stats" class="result-stats"></div>
+        <div class="result-actions">
+          <button id="btn-result-next" class="cta-chip">继续出击</button>
+          <button id="btn-result-menu" class="tool-chip">返回主界面</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Bottom Controls Strip -->
+    <footer id="controls-hint" class="controls-hint">
+      <span><kbd>WASD</kbd> 驾驶</span>
+      <span><kbd>左键</kbd> 瞄准射击 · 长按蓄力穿甲</span>
+      <span><kbd>右键拖拽</kbd> 360°自由视角</span>
+      <span><kbd>滚轮</kbd> 缩放微距</span>
+      <span><kbd>Tab</kbd> 子弹时间</span>
+    </footer>
+
+  </body>
+</html>
