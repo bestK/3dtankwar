@@ -645,6 +645,15 @@ window.addEventListener('DOMContentLoaded', () => {
     { passive: true },
   );
 
+  // Suppress the browser's long-press menu on touch devices (keep it inside
+  // text fields so copy/paste still works while chatting).
+  document.addEventListener('contextmenu', (e) => {
+    if (!isTouchUi) return;
+    const target = e.target as Element | null;
+    if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+    e.preventDefault();
+  });
+
   // Fingerprint vote-ban (10 minutes, stored per browser)
   const BAN_KEY = 'agy_tank_bans_v1';
   const BAN_MS = 10 * 60 * 1000;
