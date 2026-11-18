@@ -84,13 +84,17 @@ window.addEventListener('DOMContentLoaded', () => {
   const panelWorkshop = $('#panel-workshop')!;
 
   const selectMod = $('#select-mod') as HTMLSelectElement;
+  const selectModHud = $('#select-mod-hud') as HTMLSelectElement;
   const btnModFlip = $('#btn-mod-flip')!;
-  VEHICLE_MODS.forEach((mod) => {
-    const option = document.createElement('option');
-    option.value = mod.id;
-    option.textContent = mod.label;
-    selectMod.appendChild(option);
-  });
+  const btnModFlipHud = $('#btn-mod-flip-hud')!;
+  for (const select of [selectMod, selectModHud]) {
+    VEHICLE_MODS.forEach((mod) => {
+      const option = document.createElement('option');
+      option.value = mod.id;
+      option.textContent = mod.label;
+      select.appendChild(option);
+    });
+  }
 
   const campaignStageButtons = $all('.stage-pill');
   const btnStartCampaign = $('#btn-start-campaign')!;
@@ -628,20 +632,27 @@ window.addEventListener('DOMContentLoaded', () => {
     const { mod, flip } = parseMod(selection);
     currentMod = mod ? `${mod.id}${flip ? ':flip' : ''}` : 'default';
     selectMod.value = mod?.id || 'default';
-    btnModFlip.classList.toggle('active', flip);
-    (btnModFlip as HTMLButtonElement).disabled = !mod;
+    selectModHud.value = mod?.id || 'default';
+    for (const btn of [btnModFlip, btnModFlipHud]) {
+      btn.classList.toggle('active', flip);
+      (btn as HTMLButtonElement).disabled = !mod;
+    }
     if (persist) localStorage.setItem(MOD_KEY, currentMod);
     app.setPlayerMod(currentMod);
     if (mod) void loadVehicleMod(currentMod);
   };
 
-  applyModSelection(currentMod, false);
-  selectMod.addEventListener('change', () => applyModSelection(selectMod.value));
-  btnModFlip.addEventListener('click', () => {
+  const toggleModFlip = () => {
     const { mod, flip } = parseMod(currentMod);
     if (!mod) return;
     applyModSelection(`${mod.id}${flip ? '' : ':flip'}`);
-  });
+  };
+
+  applyModSelection(currentMod, false);
+  selectMod.addEventListener('change', () => applyModSelection(selectMod.value));
+  selectModHud.addEventListener('change', () => applyModSelection(selectModHud.value));
+  btnModFlip.addEventListener('click', toggleModFlip);
+  btnModFlipHud.addEventListener('click', toggleModFlip);
 
   const joinRoomWithVoice = (roomId: string, mode: 'pvp' | 'coop') => {
     const target = roomId.trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) || '1985';
