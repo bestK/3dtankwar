@@ -54,7 +54,6 @@
           <div id="voice-speaking" class="voice-speaking hidden"><span id="voice-speaking-names"></span></div>
           <button id="btn-voice" class="tool-chip voice-toggle">语音</button>
           <button id="btn-mute" class="tool-chip voice-mute hidden">闭麦</button>
-          <button id="btn-screen" class="tool-chip screen-toggle">投屏</button>
           <button id="btn-settings" class="tool-chip" aria-expanded="false">设置</button>
         </div>
 
@@ -185,7 +184,6 @@
             <button id="btn-share-link" class="tool-chip">复制邀请</button>
             <button id="btn-voice-lobby" class="tool-chip voice-toggle">语音</button>
             <button id="btn-mute-lobby" class="tool-chip voice-mute hidden">闭麦</button>
-            <button id="btn-screen-lobby" class="tool-chip screen-toggle">投屏</button>
           </div>
 
           <div id="pvp-map-strip" class="stage-pills compact-gap">
@@ -238,13 +236,6 @@
 
     <!-- In-Battle Chat & Voice Audio -->
     <div id="voice-audio-root" class="hidden"></div>
-    <div id="screen-panel" class="screen-panel hidden">
-      <div class="screen-head">
-        <span id="screen-caption">玩家投屏</span>
-        <button id="btn-screen-hide" class="mini-action">收起</button>
-      </div>
-      <video id="screen-video" autoplay playsinline muted></video>
-    </div>
     <div id="chat-log" class="chat-log" aria-live="polite"></div>
     <div id="chat-bar" class="chat-bar hidden">
       <input

@@ -57,12 +57,6 @@ window.addEventListener('DOMContentLoaded', () => {
   const voiceAudioRoot = $('#voice-audio-root')!;
   const voiceSpeakingChip = $('#voice-speaking')!;
   const voiceSpeakingNames = $('#voice-speaking-names')!;
-  const screenToggles = $all('.screen-toggle');
-  const screenPanel = $('#screen-panel')!;
-  const screenVideo = $('#screen-video') as HTMLVideoElement;
-  const screenCaption = $('#screen-caption')!;
-  const btnScreenHide = $('#btn-screen-hide')!;
-  const btnScreenHud = $('#btn-screen')!;
 
   // Workshop Sculpting Palette
   const workshopBar = $('#workshop-bar')!;
@@ -183,13 +177,6 @@ window.addEventListener('DOMContentLoaded', () => {
     voiceSpeakingChip.classList.toggle('hidden', names.length === 0);
   };
 
-  const setScreenUi = (sharing: boolean) => {
-    screenToggles.forEach((btn) => {
-      btn.textContent = sharing ? '投屏中' : '投屏';
-      btn.classList.toggle('active', sharing);
-    });
-  };
-
   const addKickButton = (parent: HTMLElement, peerId: string, label = '投票') => {
     if (peerId === app.net.peerId) return;
     const kick = document.createElement('button');
@@ -252,7 +239,6 @@ window.addEventListener('DOMContentLoaded', () => {
       const voiceAvailable = hud.mode === 'pvp' || hud.mode === 'coop';
       btnVoiceHud.classList.toggle('hidden', !voiceAvailable);
       btnMuteHud.classList.toggle('hidden', !voiceAvailable || !app.voice.active);
-      btnScreenHud.classList.toggle('hidden', !voiceAvailable);
 
       // Stage & wave
       if (hud.mode === 'campaign' || hud.mode === 'coop') {
@@ -633,57 +619,6 @@ window.addEventListener('DOMContentLoaded', () => {
     btn.onclick = () => app.voice.toggleMute();
   });
 
-  // Screen casting
-  const isOnlineContext = () =>
-    app.mode === 'pvp' || app.mode === 'coop' || isOnlineLobby();
-
-  const hideScreenPanel = () => {
-    screenVideo.srcObject = null;
-    screenPanel.classList.add('hidden');
-  };
-
-  app.screen.onStatusChange = setScreenUi;
-  app.screen.onRemoteStarted = (peerId, name) => {
-    if (!isOnlineContext()) return;
-    screenCaption.textContent = `${peerNames.get(peerId) || name || '玩家'} 的投屏`;
-    screenPanel.classList.remove('hidden');
-  };
-  app.screen.onRemoteStream = (_peerId, stream) => {
-    if (!isOnlineContext()) return;
-    screenVideo.srcObject = stream;
-    screenPanel.classList.remove('hidden');
-    void screenVideo.play().catch(() => {
-      // Autoplay is best-effort; the video becomes playable on the next click.
-    });
-  };
-  app.screen.onRemoteStopped = () => hideScreenPanel();
-  setScreenUi(false);
-  btnScreenHide.onclick = () => hideScreenPanel();
-
-  const toggleScreen = async () => {
-    if (app.screen.sharing) {
-      app.screen.stop();
-      return;
-    }
-    if (app.screen.busy) return;
-    if (!app.screen.supported) {
-      showToast('当前浏览器不支持投屏');
-      return;
-    }
-    const peers = app.net
-      .getPeersSorted()
-      .filter((p) => p.peerId !== app.net.peerId)
-      .map((p) => p.peerId);
-    try {
-      await app.screen.start(peers, app.net.callsign);
-    } catch {
-      showToast('投屏已取消或当前不可用');
-    }
-  };
-  screenToggles.forEach((btn) => {
-    btn.onclick = () => void toggleScreen();
-  });
-
   // Vehicle mod selection (applies to the player and is shared via presence)
   const MOD_KEY = 'agy_tank_mod';
   let currentMod = localStorage.getItem(MOD_KEY) || 'default';
@@ -712,7 +647,6 @@ window.addEventListener('DOMContentLoaded', () => {
     const target = roomId.trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) || '1985';
     if (app.net.roomId !== target) {
       app.voice.disable();
-      app.screen.reset();
     }
     app.net.joinRoom(roomId, mode);
   };
@@ -819,7 +753,6 @@ window.addEventListener('DOMContentLoaded', () => {
       if (ensureCanEnter()) joinRoomWithVoice(inputRoom.value || '1985', mode);
     } else {
       if (app.voice.active) app.voice.disable();
-      app.screen.reset();
       closeChat();
       chatLog.innerHTML = '';
     }
@@ -941,7 +874,6 @@ window.addEventListener('DOMContentLoaded', () => {
     heroOverlay.classList.remove('hidden');
     workshopBar.classList.add('hidden');
     resultModal.classList.add('hidden');
-    app.screen.reset();
     closeChat();
     chatLog.innerHTML = '';
     app.startHeroDemo();
@@ -1026,7 +958,6 @@ window.addEventListener('DOMContentLoaded', () => {
     resultModal.classList.add('hidden');
     heroOverlay.classList.remove('hidden');
     workshopBar.classList.add('hidden');
-    app.screen.reset();
     closeChat();
     chatLog.innerHTML = '';
     app.startHeroDemo();

@@ -8,7 +8,6 @@ import { BallisticSight, createProjectileMesh, ProjectileData } from './entities
 import { Tank } from './entities/Tank';
 import { loadVehicleMod, parseMod } from './mod/ModCatalog';
 import { MqttMultiplayer } from './net/MqttMultiplayer';
-import { ScreenShare } from './net/ScreenShare';
 import { VoiceChat } from './net/VoiceChat';
 import {
   CameraPreset,
@@ -121,7 +120,6 @@ export class GameApp {
   public readonly audio = new AudioSynth();
   public readonly net: MqttMultiplayer;
   public readonly voice: VoiceChat;
-  public readonly screen: ScreenShare;
 
   public mode: GameMode = 'demo';
   public stageIndex = 0;
@@ -220,7 +218,6 @@ export class GameApp {
       },
       onRosterChange: (peers, hostId) => {
         this.syncRemoteRoster(peers);
-        for (const p of peers) this.screen?.addPeer(p.peerId);
         this.ui.onRosterUpdate(peers, hostId);
       },
       onPublicRoomsChange: (rooms) => this.ui.onPublicRooms(rooms),
@@ -244,11 +241,6 @@ export class GameApp {
 
     this.voice = new VoiceChat(this.net.peerId, (evt) =>
       this.net.publishEvent(evt, evt.action === 'signal'),
-    );
-    this.screen = new ScreenShare(
-      this.net.peerId,
-      (evt) => this.net.publishEvent(evt, evt.action !== 'candidate'),
-      () => this.voice.iceServers(),
     );
 
     this.bindInputs();
@@ -645,14 +637,12 @@ export class GameApp {
 
     if (targetId === this.net.peerId) {
       this.voice.disable();
-      this.screen.reset();
       this.net.leaveRoom();
       this.ui.onKicked('你已被投票移出房间，10 分钟内无法进入', banUntil);
       return;
     }
 
     this.voice.dropPeer(targetId);
-    this.screen.dropPeer(targetId);
     this.net.blockPeer(targetId);
     this.ui.onToast(`${targetName} 已被投票移出`);
   }
@@ -1006,11 +996,6 @@ export class GameApp {
       return;
     }
 
-    if (evt.t === 'screen') {
-      this.screen.handleEvent(evt, senderId);
-      return;
-    }
-
     if (evt.t === 'vote') {
       this.handleVoteEvent(evt, senderId);
       return;
@@ -1128,10 +1113,12 @@ export class GameApp {
     if (!p || this.cheatActive) return;
     this.cheatActive = true;
     this.cheatBuffer = '';
+    p.maxHp *= 100;
+    p.hp = p.maxHp;
     p.setCheatGlow(true);
     this.audio.playPowerUp();
     this.cameraRig.addTrauma(0.35);
-    this.ui.onToast('金手指启动：车身红光 · 空格倾泻全屏弹幕');
+    this.ui.onToast('金手指启动：血量 ×100 · 车身红光 · 空格倾泻全屏弹幕');
   }
 
   private fireCheatBarrage(): void {

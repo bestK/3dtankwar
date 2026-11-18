@@ -101,16 +101,6 @@ export interface NetVoiceEvent {
   signal?: VoiceSignal;
 }
 
-export interface NetScreenEvent {
-  t: 'screen';
-  action: 'start' | 'stop' | 'offer' | 'answer' | 'candidate';
-  shareId: string;
-  name?: string;
-  to?: string;
-  sdp?: string;
-  candidate?: RTCIceCandidateInit;
-}
-
 export interface NetVoteEvent {
   t: 'vote';
   action: 'start' | 'cast' | 'result';
@@ -172,7 +162,6 @@ export type NetRoomEvent =
   | NetFireEvent
   | NetChatEvent
   | NetVoiceEvent
-  | NetScreenEvent
   | NetVoteEvent
   | NetMapDamageEvent
   | NetHitEvent

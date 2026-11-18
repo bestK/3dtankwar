@@ -1045,45 +1045,6 @@ body.mode-hero .vote-panel {
   text-align: center;
 }
 
-/* Screen share */
-.screen-panel {
-  position: fixed;
-  right: 18px;
-  bottom: 160px;
-  z-index: 23;
-  width: min(380px, 46vw);
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  background: rgba(13, 18, 26, 0.92);
-  border: 1px solid var(--brass-border);
-  clip-path: var(--chamfer-sm);
-}
-
-body.mode-hero .screen-panel {
-  z-index: 26;
-}
-
-.screen-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  color: var(--brass-bright);
-}
-
-#screen-video {
-  display: block;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  background: #000;
-  object-fit: contain;
-}
-
 .kick-btn {
   margin-left: auto;
   height: 22px;
