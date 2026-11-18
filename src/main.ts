@@ -645,12 +645,22 @@ window.addEventListener('DOMContentLoaded', () => {
     { passive: true },
   );
 
-  // Suppress the browser's long-press menu on touch devices (keep it inside
-  // text fields so copy/paste still works while chatting).
+  // Suppress the browser's long-press menu / text selection everywhere except
+  // in text fields, where copy & paste must keep working while chatting.
+  const isEditableTarget = (target: EventTarget | null): boolean => {
+    const el = target as Element | null;
+    return !!el?.closest('input, textarea, [contenteditable="true"]');
+  };
   document.addEventListener('contextmenu', (e) => {
-    if (!isTouchUi) return;
-    const target = e.target as Element | null;
-    if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+    if (isEditableTarget(e.target)) return;
+    e.preventDefault();
+  });
+  document.addEventListener('selectstart', (e) => {
+    if (isEditableTarget(e.target)) return;
+    e.preventDefault();
+  });
+  document.addEventListener('dragstart', (e) => {
+    if (isEditableTarget(e.target)) return;
     e.preventDefault();
   });
 
