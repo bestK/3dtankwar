@@ -146,6 +146,12 @@ export class GameApp {
   private pvpPowerUpTimer = 8.0;
   private respawnTimer = 0;
 
+  private viewportRaf = 0;
+  private viewportTimers: number[] = [];
+  private viewportObserver: ResizeObserver | null = null;
+  private viewportW = 0;
+  private viewportH = 0;
+
   private keys = new Set<string>();
   private mouseNdc = new THREE.Vector2(0, 0);
   private aimWorldPoint = new THREE.Vector3(0, 0, 0);
@@ -278,6 +284,33 @@ export class GameApp {
     this.scene.add(rimLight);
   }
 
+  private applyViewportSize = (): void => {
+    const host = this.renderer.domElement.parentElement;
+    const w = Math.max(1, Math.round(host?.clientWidth || window.innerWidth));
+    const h = Math.max(1, Math.round(host?.clientHeight || window.innerHeight));
+    if (w === this.viewportW && h === this.viewportH) return;
+    this.viewportW = w;
+    this.viewportH = h;
+    this.cameraRig.resize(w / h);
+    this.renderer.setSize(w, h);
+    this.post.resize(w, h);
+  };
+
+  private scheduleViewportResize = (): void => {
+    if (this.viewportRaf === 0) {
+      this.viewportRaf = requestAnimationFrame(() => {
+        this.viewportRaf = 0;
+        this.applyViewportSize();
+      });
+    }
+    // Mobile browsers report stale dimensions during orientation changes;
+    // re-apply once the layout has settled.
+    for (const timer of this.viewportTimers) window.clearTimeout(timer);
+    this.viewportTimers = [120, 450].map((delay) =>
+      window.setTimeout(() => this.applyViewportSize(), delay),
+    );
+  };
+
   private bindInputs(): void {
     this.cameraRig.attachDomEvents(
       this.renderer.domElement,
@@ -285,13 +318,18 @@ export class GameApp {
       () => this.mode !== 'workshop',
     );
 
-    window.addEventListener('resize', () => {
-      const w = window.innerWidth;
-      const h = window.innerHeight;
-      this.cameraRig.resize(w / h);
-      this.renderer.setSize(w, h);
-      this.post.resize(w, h);
-    });
+    window.addEventListener('resize', this.scheduleViewportResize);
+    window.addEventListener('orientationchange', this.scheduleViewportResize);
+    window.visualViewport?.addEventListener('resize', this.scheduleViewportResize);
+    screen.orientation?.addEventListener?.('change', this.scheduleViewportResize);
+    document.addEventListener('fullscreenchange', this.scheduleViewportResize);
+
+    const host = this.renderer.domElement.parentElement;
+    if (host && typeof ResizeObserver !== 'undefined') {
+      this.viewportObserver = new ResizeObserver(this.scheduleViewportResize);
+      this.viewportObserver.observe(host);
+    }
+    this.applyViewportSize();
 
     window.addEventListener('keydown', (e) => {
       if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
