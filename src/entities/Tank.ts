@@ -10,6 +10,26 @@ function lerpAngle(a: number, b: number, t: number): number {
   return a + diff * t;
 }
 
+let chargeGlowTexture: THREE.CanvasTexture | null = null;
+
+function getChargeGlowTexture(): THREE.CanvasTexture {
+  if (chargeGlowTexture) return chargeGlowTexture;
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d')!;
+  const grad = ctx.createRadialGradient(64, 64, 4, 64, 64, 62);
+  grad.addColorStop(0, 'rgba(255, 236, 214, 0.95)');
+  grad.addColorStop(0.35, 'rgba(255, 112, 48, 0.58)');
+  grad.addColorStop(0.72, 'rgba(255, 46, 16, 0.2)');
+  grad.addColorStop(1, 'rgba(255, 30, 10, 0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 128, 128);
+  chargeGlowTexture = new THREE.CanvasTexture(canvas);
+  chargeGlowTexture.colorSpace = THREE.SRGBColorSpace;
+  return chargeGlowTexture;
+}
+
 export interface TankOptions {
   id: string;
   team: 'player' | 'enemy';
@@ -42,6 +62,8 @@ export class Tank {
   private primaryMat!: THREE.MeshStandardMaterial;
   private muzzleMat!: THREE.MeshStandardMaterial;
   private barrelMat!: THREE.MeshStandardMaterial;
+  private chargeGlow!: THREE.Mesh;
+  private chargeGlowMat!: THREE.MeshBasicMaterial;
   private leftTreadTex!: THREE.CanvasTexture;
   private rightTreadTex!: THREE.CanvasTexture;
   private singleBarrel!: THREE.Group;
@@ -446,6 +468,22 @@ export class Tank {
     this.shieldMesh.position.y = 0.52;
     this.shieldMesh.visible = false;
     this.root.add(this.shieldMesh);
+
+    // 6. Red charge aura beneath the hull
+    this.chargeGlowMat = new THREE.MeshBasicMaterial({
+      map: getChargeGlowTexture(),
+      color: new THREE.Color(1.7, 0.32, 0.08),
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    this.chargeGlow = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 2.4), this.chargeGlowMat);
+    this.chargeGlow.rotation.x = -Math.PI / 2;
+    this.chargeGlow.position.y = 0.035;
+    this.chargeGlow.visible = false;
+    this.chargeGlow.renderOrder = 2;
+    this.root.add(this.chargeGlow);
   }
 
   private buildNameBadge(label: string, colorHex: number): void {
@@ -573,6 +611,7 @@ export class Tank {
     this.alive = true;
     this.hp = this.maxHp;
     this.chargeRatio = 0;
+    this.chargeGlow.visible = false;
     this.primaryMat.color.setHex(this.baseColorHex);
     this.shieldTimer = shieldSec;
     this.root.visible = true;
@@ -606,6 +645,7 @@ export class Tank {
     const wasAlive = this.alive;
     this.alive = snap.alive > 0;
     this.root.visible = this.alive;
+    if (!this.alive) this.chargeGlow.visible = false;
     if (!wasAlive && this.alive) {
       this.x = snap.x;
       this.z = snap.z;
@@ -836,6 +876,17 @@ export class Tank {
     this.barrelMat.emissiveIntensity =
       (this.chargeRatio * 3.2 + this.barrelHeat * 0.8) * fullChargePulse;
     this.railCoils.visible = this.stars >= 3 || this.chargeRatio > 0.15;
+
+    // Pulsing red aura under the hull while charging
+    this.chargeGlow.visible = this.chargeRatio > 0.02 && this.alive;
+    if (this.chargeGlow.visible) {
+      const full = this.chargeRatio >= 0.98;
+      const pulse = full
+        ? 0.55 + Math.sin(performance.now() * 0.02) * 0.45
+        : 0.78 + Math.sin(performance.now() * 0.009) * 0.22;
+      this.chargeGlowMat.opacity = Math.min(0.9, (0.22 + this.chargeRatio * 0.58) * pulse);
+      this.chargeGlow.scale.setScalar(1 + this.chargeRatio * 0.24 + pulse * 0.05);
+    }
 
     // Cheat-mode crimson pulse
     if (this.cheatGlow && this.cheatLight) {
