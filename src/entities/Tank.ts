@@ -41,6 +41,7 @@ export class Tank {
 
   private primaryMat!: THREE.MeshStandardMaterial;
   private muzzleMat!: THREE.MeshStandardMaterial;
+  private barrelMat!: THREE.MeshStandardMaterial;
   private leftTreadTex!: THREE.CanvasTexture;
   private rightTreadTex!: THREE.CanvasTexture;
   private singleBarrel!: THREE.Group;
@@ -185,6 +186,14 @@ export class Tank {
       roughness: 0.32,
       metalness: 0.82,
       emissive: new THREE.Color(0xff7b1a),
+      emissiveIntensity: 0,
+    });
+
+    this.barrelMat = new THREE.MeshStandardMaterial({
+      color: 0x6f7d8f,
+      roughness: 0.28,
+      metalness: 0.86,
+      emissive: new THREE.Color(0xff2a0a),
       emissiveIntensity: 0,
     });
 
@@ -362,7 +371,7 @@ export class Tank {
 
     // Single Barrel
     this.singleBarrel = new THREE.Group();
-    const bTube = new THREE.Mesh(new THREE.CylinderGeometry(0.068, 0.085, 1.08, 12), gunSteelMat);
+    const bTube = new THREE.Mesh(new THREE.CylinderGeometry(0.068, 0.085, 1.08, 12), this.barrelMat);
     bTube.rotation.x = Math.PI / 2;
     bTube.position.z = 0.56;
     bTube.castShadow = true;
@@ -376,7 +385,7 @@ export class Tank {
     // Twin Barrels (for Twin archetype or Star >= 2)
     this.twinBarrels = new THREE.Group();
     for (const bx of [-0.12, 0.12]) {
-      const tb = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.064, 1.04, 10), gunSteelMat);
+      const tb = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.064, 1.04, 10), this.barrelMat);
       tb.rotation.x = Math.PI / 2;
       tb.position.set(bx, 0, 0.54);
       tb.castShadow = true;
@@ -822,6 +831,10 @@ export class Tank {
 
     // Muzzle thermal glow + charge coil glow
     this.muzzleMat.emissiveIntensity = this.barrelHeat * 2.2 + this.chargeRatio * 3.0;
+    const fullChargePulse =
+      this.chargeRatio >= 0.98 ? 0.8 + Math.sin(performance.now() * 0.02) * 0.2 : 1;
+    this.barrelMat.emissiveIntensity =
+      (this.chargeRatio * 3.2 + this.barrelHeat * 0.8) * fullChargePulse;
     this.railCoils.visible = this.stars >= 3 || this.chargeRatio > 0.15;
 
     // Cheat-mode crimson pulse
