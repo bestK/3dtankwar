@@ -935,6 +935,16 @@ button {
   border-left-color: var(--brass-gold);
 }
 
+.chat-line.kill {
+  background: rgba(34, 12, 12, 0.84);
+  border-left-color: var(--crimson-alert);
+  color: #ffd9cc;
+}
+
+.chat-line.kill .chat-name {
+  color: #ff8a70;
+}
+
 .chat-name {
   margin-right: 6px;
   font-weight: 900;

@@ -160,9 +160,14 @@ window.addEventListener('DOMContentLoaded', () => {
     }, 2900);
   };
 
-  const addChatMessage = (name: string, text: string, self: boolean) => {
+  const addChatMessage = (
+    name: string,
+    text: string,
+    self: boolean,
+    kind: 'chat' | 'kill' = 'chat',
+  ) => {
     const line = document.createElement('div');
-    line.className = `chat-line${self ? ' self' : ''}`;
+    line.className = `chat-line${self ? ' self' : ''}${kind === 'kill' ? ' kill' : ''}`;
     const who = document.createElement('span');
     who.className = 'chat-name';
     who.textContent = name;
@@ -421,9 +426,9 @@ window.addEventListener('DOMContentLoaded', () => {
       beginTouchCombat();
     },
 
-    onChatMessage: (name: string, text: string, self: boolean) => {
+    onChatMessage: (name: string, text: string, self: boolean, kind) => {
       if (!app.isCombatMode() && !isOnlineLobby()) return;
-      addChatMessage(name, text, self);
+      addChatMessage(name, text, self, kind);
     },
 
     onKicked: (msg: string, banUntil?: number) => {

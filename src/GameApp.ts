@@ -68,7 +68,7 @@ export interface GameUiBridge {
   onToast: (msg: string) => void;
   onMatchEnd: (victory: boolean, title: string, statsText: string, canNextStage: boolean) => void;
   onOnlineMatchStarted: (mode: 'pvp' | 'coop') => void;
-  onChatMessage: (name: string, text: string, self: boolean) => void;
+  onChatMessage: (name: string, text: string, self: boolean, kind?: 'chat' | 'kill') => void;
   onKicked: (msg: string, banUntil?: number) => void;
   onVoteUpdate: (state: VoteUiState | null) => void;
   onFingerprintBan: (fp: string, until: number) => void;
@@ -785,6 +785,10 @@ export class GameApp {
     }
   }
 
+  private emitKillFeed(text: string): void {
+    this.ui.onChatMessage('战报', text, false, 'kill');
+  }
+
   public cycleCameraPreset(): CameraPreset {
     const order: CameraPreset[] = ['diorama', 'chase', 'orbit'];
     const next = order[(order.indexOf(this.cameraRig.preset) + 1) % order.length];
@@ -1141,6 +1145,7 @@ export class GameApp {
           this.audio.playExplosion(true);
           this.shockPulse = 0.9;
           this.ui.onToast(`被 ${evt.attackerName} 击毁！`);
+          this.emitKillFeed(`你被 ${evt.attackerName || '玩家'} 击毁`);
           this.handleLocalDeath();
         } else {
           this.vfx.spawnSparks(evt.x, 0.7, evt.z, 18, 0xffaa44);
@@ -1150,6 +1155,7 @@ export class GameApp {
         if (rt) {
           rt.alive = false;
           rt.root.visible = false;
+          this.emitKillFeed(`${evt.attackerName || '玩家'} 击毁 ${rt.name}`);
         }
         this.vfx.spawnTankExplosion(evt.x, evt.z, true);
         this.audio.playExplosion(true);
@@ -1850,6 +1856,7 @@ export class GameApp {
             this.cameraRig.addTrauma(0.65);
             this.shockPulse = 0.7;
             this.ui.onToast(`击毁 ${target.name}！`);
+            this.emitKillFeed(`你击毁 ${target.name}`);
             this.checkPvpWinCondition();
           } else {
             this.vfx.spawnSparks(p.x, 0.75, p.z, 18, 0xffb84a);
@@ -1910,6 +1917,7 @@ export class GameApp {
             this.localPlayer.score += pts;
             this.net.setLocalStats(this.localPlayer.kills, this.localPlayer.score);
             if (this.mode === 'pvp') this.checkPvpWinCondition();
+            else this.emitKillFeed(`你击毁 ${target.name}`);
           }
 
           if (target.isBonusCarrier && (this.mode === 'campaign' || (this.mode === 'coop' && this.net.isHost()))) {
