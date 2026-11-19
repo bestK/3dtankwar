@@ -53,7 +53,6 @@ window.addEventListener('DOMContentLoaded', () => {
   const stickMoveKnob = $('#stick-move-knob')!;
   const stickAim = $('#stick-aim')!;
   const stickAimKnob = $('#stick-aim-knob')!;
-  const btnTouchFire = $('#btn-touch-fire')!;
   const rotateHint = $('#rotate-hint')!;
   const btnRotate = $('#btn-rotate')!;
   const btnRotateDismiss = $('#btn-rotate-dismiss')!;
@@ -510,7 +509,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   const beginTouchCombat = (): void => {
     rotateHint.classList.remove('hidden');
-    if (isTouchUi) showToast('左摇杆驾驶 · 右摇杆瞄准 · 开炮键长按蓄力');
+    if (isTouchUi) showToast('左摇杆驾驶 · 右摇杆瞄准，松手开炮，长按蓄力');
     void enterLandscape();
   };
 
@@ -528,7 +527,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const resetTouchUi = (): void => {
     stickMoveKnob.style.transform = '';
     stickAimKnob.style.transform = '';
-    btnTouchFire.classList.remove('active');
+    stickAim.classList.remove('firing');
     app.releaseTouchInputs();
   };
 
@@ -536,8 +535,9 @@ window.addEventListener('DOMContentLoaded', () => {
     zone: HTMLElement,
     knob: HTMLElement,
     onChange: (x: number, y: number) => void,
-    deadzone = 0.18,
+    options: { deadzone?: number; onPress?: () => void; onRelease?: () => void } = {},
   ): void => {
+    const deadzone = options.deadzone ?? 0.18;
     let pointerId: number | null = null;
 
     const apply = (clientX: number, clientY: number): void => {
@@ -562,6 +562,7 @@ window.addEventListener('DOMContentLoaded', () => {
       pointerId = null;
       knob.style.transform = '';
       onChange(0, 0);
+      options.onRelease?.();
     };
 
     zone.addEventListener('pointerdown', (e) => {
@@ -570,6 +571,7 @@ window.addEventListener('DOMContentLoaded', () => {
       pointerId = e.pointerId;
       zone.setPointerCapture(e.pointerId);
       apply(e.clientX, e.clientY);
+      options.onPress?.();
     });
     zone.addEventListener('pointermove', (e) => {
       if (pointerId !== e.pointerId) return;
@@ -589,31 +591,16 @@ window.addEventListener('DOMContentLoaded', () => {
   };
 
   setupStick(stickMove, stickMoveKnob, (x, y) => app.setTouchMove(x, y));
-  setupStick(stickAim, stickAimKnob, (x, y) => app.setTouchAim(x, y));
-
-  let touchFireHeld = false;
-  btnTouchFire.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (touchFireHeld) return;
-    touchFireHeld = true;
-    btnTouchFire.classList.add('active');
-    btnTouchFire.setPointerCapture(e.pointerId);
-    app.touchFireStart();
-  });
-  const endTouchFire = (e: PointerEvent): void => {
-    if (!touchFireHeld) return;
-    e.preventDefault();
-    e.stopPropagation();
-    touchFireHeld = false;
-    btnTouchFire.classList.remove('active');
-    app.touchFireEnd();
-  };
-  btnTouchFire.addEventListener('pointerup', endTouchFire);
-  btnTouchFire.addEventListener('pointercancel', endTouchFire);
-  btnTouchFire.addEventListener('lostpointercapture', endTouchFire);
-  btnTouchFire.addEventListener('pointermove', (e) => {
-    if (touchFireHeld) e.stopPropagation();
+  // Right stick aims; holding it charges, releasing fires.
+  setupStick(stickAim, stickAimKnob, (x, y) => app.setTouchAim(x, y), {
+    onPress: () => {
+      stickAim.classList.add('firing');
+      app.touchFireStart();
+    },
+    onRelease: () => {
+      stickAim.classList.remove('firing');
+      app.touchFireEnd();
+    },
   });
   mobileControls.addEventListener('contextmenu', (e) => e.preventDefault());
 
