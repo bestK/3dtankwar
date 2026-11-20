@@ -59,6 +59,13 @@ window.addEventListener('DOMContentLoaded', () => {
   const btnChatMobile = $('#btn-chat-mobile')!;
   const btnChatLobby = $('#btn-chat-lobby')!;
   const btnFullscreen = $('#btn-fullscreen')!;
+  const settingsTools = $('#settings-tools')!;
+  if (isTouchUi) {
+    // Keep only chat + settings in the top bar; tuck the rest into the popover.
+    for (const chip of [btnCamera, btnSlowmo, btnAudio, btnVoiceHud, btnMuteHud, btnFullscreen]) {
+      settingsTools.appendChild(chip);
+    }
+  }
 
   // Charge Bar & Toasts
   const chargeWrap = $('#charge-bar-wrap')!;

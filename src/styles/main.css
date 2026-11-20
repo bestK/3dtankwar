@@ -325,6 +325,25 @@ button {
   font-size: 12px;
 }
 
+.settings-tools {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--steel-border);
+}
+
+.settings-tools:empty {
+  display: none;
+}
+
+.settings-tools .tool-chip {
+  height: 34px;
+  padding: 0 5px;
+  justify-content: center;
+  font-size: 11px;
+}
+
 .settings-row .mini-action {
   height: 26px;
 }
@@ -1336,8 +1355,9 @@ body.is-touch .mobile-controls {
 
 @media (max-width: 900px) {
   .hero-overlay {
-    padding: calc(10px + env(safe-area-inset-top, 0px)) 12px
-      calc(10px + env(safe-area-inset-bottom, 0px));
+    padding: calc(10px + env(safe-area-inset-top, 0px))
+      calc(12px + env(safe-area-inset-right, 0px)) calc(10px + env(safe-area-inset-bottom, 0px))
+      calc(12px + env(safe-area-inset-left, 0px));
   }
 
   .hero-dock {
@@ -1467,14 +1487,14 @@ body.is-touch .mobile-controls {
   }
 
   .event-feed {
-    top: 88px;
-    right: 8px;
+    top: calc(88px + env(safe-area-inset-top, 0px));
+    right: calc(8px + env(safe-area-inset-right, 0px));
     max-width: 46vw;
   }
 
   .chat-log {
-    left: 8px;
-    top: 88px;
+    left: calc(8px + env(safe-area-inset-left, 0px));
+    top: calc(88px + env(safe-area-inset-top, 0px));
     bottom: auto;
     width: min(320px, 54vw);
   }
@@ -1489,8 +1509,8 @@ body.is-touch .mobile-controls {
 
   body.mode-hero .chat-log {
     left: auto;
-    right: 8px;
-    top: 64px;
+    right: calc(8px + env(safe-area-inset-right, 0px));
+    top: calc(64px + env(safe-area-inset-top, 0px));
     bottom: auto;
     width: min(300px, 72vw);
   }
@@ -1592,8 +1612,9 @@ body.is-touch .mobile-controls {
 
 @media (orientation: landscape) and (max-height: 520px) {
   .hero-overlay {
-    padding: calc(6px + env(safe-area-inset-top, 0px)) 10px
-      calc(6px + env(safe-area-inset-bottom, 0px));
+    padding: calc(6px + env(safe-area-inset-top, 0px))
+      calc(10px + env(safe-area-inset-right, 0px)) calc(6px + env(safe-area-inset-bottom, 0px))
+      calc(10px + env(safe-area-inset-left, 0px));
   }
 
   .hero-dock {
@@ -1678,7 +1699,7 @@ body.is-touch .mobile-controls {
 @media (orientation: portrait) and (max-width: 900px) {
   body.is-touch.mobile-combat .event-feed,
   body.is-touch.mobile-combat .chat-log {
-    top: 122px;
+    top: calc(122px + env(safe-area-inset-top, 0px));
   }
 }
 
