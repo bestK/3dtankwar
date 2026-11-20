@@ -519,7 +519,6 @@ body.is-touch .settings-resume {
   background: linear-gradient(155deg, rgba(13, 18, 26, 0.86), rgba(18, 25, 35, 0.76));
   backdrop-filter: blur(14px);
   border: 1px solid var(--brass-border);
-  border-left: 3px solid var(--brass-gold);
   clip-path: var(--chamfer);
   pointer-events: auto;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
