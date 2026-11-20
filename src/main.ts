@@ -60,6 +60,9 @@ window.addEventListener('DOMContentLoaded', () => {
   const btnChatLobby = $('#btn-chat-lobby')!;
   const btnFullscreen = $('#btn-fullscreen')!;
   const settingsTools = $('#settings-tools')!;
+  const settingsBackdrop = $('#settings-backdrop')!;
+  const btnSettingsClose = $('#btn-settings-close')!;
+  const btnSettingsResume = $('#btn-settings-resume')!;
   if (isTouchUi) {
     // Keep only chat + settings in the top bar; tuck the rest into the popover.
     for (const chip of [btnCamera, btnSlowmo, btnAudio, btnVoiceHud, btnMuteHud, btnFullscreen]) {
@@ -421,6 +424,7 @@ window.addEventListener('DOMContentLoaded', () => {
       mobileControls.classList.add('hidden');
       document.body.classList.remove('mobile-combat');
       resetTouchUi();
+      closeSettings();
       closeChat();
     },
 
@@ -446,6 +450,7 @@ window.addEventListener('DOMContentLoaded', () => {
       mobileControls.classList.add('hidden');
       document.body.classList.remove('mobile-combat');
       resetTouchUi();
+      closeSettings();
       exitLandscape();
       votePanel.classList.add('hidden');
       closeChat();
@@ -1138,6 +1143,7 @@ window.addEventListener('DOMContentLoaded', () => {
     mobileControls.classList.add('hidden');
     document.body.classList.remove('mobile-combat');
     resetTouchUi();
+    closeSettings();
     exitLandscape();
     closeChat();
     chatLog.innerHTML = '';
@@ -1185,14 +1191,27 @@ window.addEventListener('DOMContentLoaded', () => {
     settingsPopover.classList.add('hidden');
     btnSettings.classList.remove('active');
     btnSettings.setAttribute('aria-expanded', 'false');
+    document.body.classList.remove('settings-open');
+  };
+
+  const openSettings = () => {
+    settingsPopover.classList.remove('hidden');
+    btnSettings.classList.add('active');
+    btnSettings.setAttribute('aria-expanded', 'true');
+    if (isTouchUi) {
+      resetTouchUi();
+      if (!chatBar.classList.contains('hidden')) closeChat();
+      document.body.classList.add('settings-open');
+    }
   };
 
   btnSettings.onclick = () => {
-    const open = settingsPopover.classList.contains('hidden');
-    settingsPopover.classList.toggle('hidden', !open);
-    btnSettings.classList.toggle('active', open);
-    btnSettings.setAttribute('aria-expanded', String(open));
+    if (settingsPopover.classList.contains('hidden')) openSettings();
+    else closeSettings();
   };
+  settingsBackdrop.onclick = closeSettings;
+  btnSettingsClose.onclick = closeSettings;
+  btnSettingsResume.onclick = closeSettings;
 
   document.addEventListener('pointerdown', (e) => {
     if (settingsPopover.classList.contains('hidden')) return;
@@ -1228,6 +1247,7 @@ window.addEventListener('DOMContentLoaded', () => {
     mobileControls.classList.add('hidden');
     document.body.classList.remove('mobile-combat');
     resetTouchUi();
+    closeSettings();
     exitLandscape();
     closeChat();
     chatLog.innerHTML = '';

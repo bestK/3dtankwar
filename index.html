@@ -21,6 +21,7 @@
   </head>
   <body>
     <div id="canvas-root"></div>
+    <div id="settings-backdrop" class="settings-backdrop"></div>
 
     <!-- Top Tactical Bar -->
     <header id="hud-top" class="hud-top hidden">
@@ -63,6 +64,10 @@
         </div>
 
         <div id="settings-popover" class="settings-popover hidden">
+          <div class="settings-head">
+            <span class="settings-title">设置</span>
+            <button id="btn-settings-close" class="settings-close" aria-label="关闭设置">✕</button>
+          </div>
           <div class="settings-row">
             <label for="range-turret-speed">键盘炮塔转速</label>
             <span id="turret-speed-value" class="settings-value">2.6</span>
@@ -84,6 +89,7 @@
           </div>
           <select id="select-mod-hud" class="field-input mod-select-hud"></select>
           <div id="settings-tools" class="settings-tools"></div>
+          <button id="btn-settings-resume" class="cta-chip compact settings-resume">继续游戏</button>
         </div>
       </div>
     </header>

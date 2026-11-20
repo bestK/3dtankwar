@@ -278,6 +278,45 @@ button {
   clip-path: var(--chamfer-sm);
 }
 
+.settings-backdrop {
+  display: none;
+}
+
+.settings-head {
+  display: none;
+}
+
+.settings-title {
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  color: var(--brass-bright);
+}
+
+.settings-close {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--steel-border);
+  border-radius: 2px;
+  font-size: 15px;
+  color: var(--ivory-chalk);
+}
+
+.settings-resume {
+  display: none;
+  width: 100%;
+  margin-top: 2px;
+}
+
+body.is-touch .settings-resume {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .settings-row {
   display: flex;
   align-items: center;
@@ -1590,9 +1629,82 @@ body.is-touch .mobile-controls {
   }
 
   body.is-touch .settings-popover {
-    width: min(260px, calc(100vw - 20px));
-    max-height: calc(100dvh - 110px);
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    right: auto;
+    width: min(380px, calc(100vw - 32px));
+    max-height: calc(100vh - 40px);
+    max-height: calc(100dvh - 40px);
+    padding: 16px;
+    transform: translate(-50%, -50%);
     overflow-y: auto;
+    border-color: var(--brass-gold);
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.72);
+  }
+
+  body.is-touch .settings-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--steel-border);
+  }
+
+  body.is-touch .settings-tools {
+    grid-template-columns: repeat(5, 1fr);
+    gap: 4px;
+  }
+
+  body.is-touch .settings-tools .tool-chip {
+    height: 38px;
+    padding: 0 2px;
+    font-size: 11px;
+  }
+
+  body.is-touch .settings-resume {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+  }
+
+  body.is-touch .settings-tools::before {
+    content: '战斗工具';
+    grid-column: 1 / -1;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--slate-muted);
+  }
+
+  body.is-touch.settings-open .hud-top {
+    z-index: 30;
+  }
+
+  body.is-touch.settings-open .mobile-controls {
+    display: none !important;
+  }
+
+  body.is-touch.settings-open .hud-cluster.left,
+  body.is-touch.settings-open .player-vitals,
+  body.is-touch.settings-open .tool-strip {
+    display: none !important;
+  }
+
+  body.is-touch.settings-open .chat-bar,
+  body.is-touch.settings-open .chat-log,
+  body.is-touch.settings-open .event-feed,
+  body.is-touch.settings-open .charge-wrap {
+    display: none !important;
+  }
+
+  body.is-touch.settings-open .settings-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 25;
+    background: rgba(6, 9, 14, 0.72);
+    backdrop-filter: blur(4px);
   }
 
   body.is-touch .charge-wrap {
