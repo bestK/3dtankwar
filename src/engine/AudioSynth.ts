@@ -6,7 +6,6 @@ export class AudioSynth {
   public enabled = true;
 
   public unlock(): void {
-    if (!this.enabled) return;
     if (!this.ctx) {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (!AudioCtx) return;
@@ -34,9 +33,27 @@ export class AudioSynth {
 
   public setEnabled(on: boolean): void {
     this.enabled = on;
+    if (on) this.unlock();
     if (this.masterGain && this.ctx) {
       this.masterGain.gain.setTargetAtTime(on ? 0.55 : 0, this.ctx.currentTime, 0.04);
     }
+  }
+
+  public playUiToggle(): void {
+    if (!this.enabled || !this.ctx || !this.masterGain) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(760, t);
+    osc.frequency.exponentialRampToValueAtTime(1180, t + 0.07);
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.14, t + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(t);
+    osc.stop(t + 0.13);
   }
 
   private buildNoiseBuffer(seconds: number): AudioBuffer {

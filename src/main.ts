@@ -1163,13 +1163,15 @@ window.addEventListener('DOMContentLoaded', () => {
     showToast(on ? '子弹时间已开启' : '子弹时间已关闭');
   };
 
+  btnAudio.textContent = app.audio.enabled ? '音效开' : '音效关';
+  btnAudio.classList.toggle('active', app.audio.enabled);
   btnAudio.onclick = () => {
-    app.audio.unlock();
     const next = !app.audio.enabled;
     app.audio.setEnabled(next);
+    if (next) app.audio.playUiToggle();
     btnAudio.classList.toggle('active', next);
-    btnAudio.textContent = next ? '音效' : '静音';
-    showToast(next ? '音效系统已开启' : '音效已静音');
+    btnAudio.textContent = next ? '音效开' : '音效关';
+    showToast(next ? '音效已开启' : '音效已静音');
   };
 
   // Settings: keyboard turret turn speed

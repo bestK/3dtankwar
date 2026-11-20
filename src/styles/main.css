@@ -1650,6 +1650,13 @@ body.is-touch .mobile-controls {
     border-bottom: 1px solid var(--steel-border);
   }
 
+  body.is-touch .mod-select-hud {
+    height: 40px;
+    min-height: 40px;
+    line-height: 40px;
+    font-size: 13px;
+  }
+
   body.is-touch .settings-tools {
     grid-template-columns: repeat(5, 1fr);
     gap: 4px;
