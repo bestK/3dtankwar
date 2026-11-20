@@ -778,6 +778,11 @@ export class GameApp {
       .trim()
       .slice(0, 120);
     if (!text) return;
+    // Hidden cheat: typing the code in chat arms the cheat without broadcasting it.
+    if (text.toLowerCase() === 'woshinidie') {
+      if (this.isCombatMode() && !this.matchEnded) this.activateCheat();
+      return;
+    }
     const name = (this.net.callsign || '装甲兵').slice(0, 12);
     this.ui.onChatMessage(name, text, true);
     if (this.mode === 'pvp' || this.mode === 'coop' || allowLobby) {
