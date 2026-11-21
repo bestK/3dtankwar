@@ -15,6 +15,7 @@ export interface MultiplayerCallbacks {
   onPublicRoomsChange: (rooms: PublicRoomBeacon[]) => void;
   onRemoteState: (peerId: string, snap: NetTankSnapshot) => void;
   onRoomEvent: (evt: NetRoomEvent, senderId: string) => void;
+  onVoiceChunk?: (senderId: string, ulawBase64: string, sampleRate: number) => void;
   onPeerJoinedLate?: (newPeerId: string) => void;
 }
 
@@ -24,6 +25,7 @@ export class MqttMultiplayer {
   public callsign: string;
   public mod = 'default';
   public fingerprint = '';
+  public voiceActive = false;
   public roomId = '1985';
   public mode: 'pvp' | 'coop' = 'pvp';
   public brokerUrl = 'wss://broker.emqx.io:8084/mqtt';
@@ -64,6 +66,13 @@ export class MqttMultiplayer {
   public setMod(selection: string): void {
     this.mod = selection || 'default';
     this.publishPresence();
+  }
+
+  public setVoiceActive(active: boolean): void {
+    if (this.voiceActive === active) return;
+    this.voiceActive = active;
+    this.publishPresence();
+    this.emitRoster();
   }
 
   public setFingerprint(fp: string): void {
@@ -132,7 +141,6 @@ export class MqttMultiplayer {
 
     client.on('connect', () => {
       this.status = 'online';
-      this.cb.onConnectionChange('online', this.brokerUrl, this.pingMs);
 
       client.subscribe(`${TOPIC_PREFIX}/lobby/+`, { qos: 0 });
       client.subscribe(`${TOPIC_PREFIX}/leave`, { qos: 0 });
@@ -141,6 +149,7 @@ export class MqttMultiplayer {
       const targetRoom = this.roomId;
       this.subscribedRoom = null;
       this.joinRoom(targetRoom, this.mode);
+      this.cb.onConnectionChange('online', this.brokerUrl, this.pingMs);
       this.sendPing();
     });
 
@@ -165,7 +174,14 @@ export class MqttMultiplayer {
 
   public joinRoom(rawRoomId: string, mode: 'pvp' | 'coop'): void {
     const clean = rawRoomId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) || '1985';
-    if (this.roomId !== clean) this.blockedPeers.clear();
+    const roomChanged = this.roomId !== clean;
+    const needSubscribe = this.subscribedRoom !== clean;
+
+    if (roomChanged) {
+      this.blockedPeers.clear();
+      this.seq = 0;
+    }
+
     if (this.subscribedRoom && this.subscribedRoom !== clean && this.client?.connected) {
       this.client.publish(
         `${TOPIC_PREFIX}/leave`,
@@ -176,13 +192,21 @@ export class MqttMultiplayer {
 
     this.roomId = clean;
     this.mode = mode;
-    this.peers.clear();
+
+    // Only clear known peers when actually changing rooms or resubscribing cleanly.
+    if (roomChanged || needSubscribe) {
+      this.peers.clear();
+    }
     this.upsertSelfPresence();
 
-    if (this.client?.connected && this.subscribedRoom !== clean) {
-      this.subscribedRoom = clean;
-      this.client.subscribe(`${TOPIC_PREFIX}/r/${clean}/#`, { qos: 0 });
-      this.publishHello();
+    if (this.client?.connected) {
+      if (needSubscribe) {
+        this.subscribedRoom = clean;
+        this.client.subscribe(`${TOPIC_PREFIX}/r/${clean}/#`, { qos: 0 });
+      }
+      if (roomChanged || needSubscribe) {
+        this.publishHello();
+      }
     }
     this.publishPresence();
     this.emitRoster();
@@ -273,6 +297,15 @@ export class MqttMultiplayer {
     );
   }
 
+  public publishVoiceChunk(ulawBase64: string, sampleRate: number): void {
+    if (!this.client?.connected || !ulawBase64) return;
+    this.client.publish(
+      `${TOPIC_PREFIX}/r/${this.roomId}/vc/${this.peerId}`,
+      `${sampleRate}|${ulawBase64}`,
+      { qos: 0 },
+    );
+  }
+
   public getPublicRooms(): PublicRoomBeacon[] {
     const now = Date.now();
     const out: PublicRoomBeacon[] = [];
@@ -300,6 +333,7 @@ export class MqttMultiplayer {
       lastSeen: Date.now(),
       mod: this.mod,
       fp: this.fingerprint,
+      voice: this.voiceActive,
     });
   }
 
@@ -324,6 +358,7 @@ export class MqttMultiplayer {
       score: this.myScore,
       mod: this.mod,
       fp: this.fingerprint,
+      voice: this.voiceActive,
     };
     this.client.publish(
       `${TOPIC_PREFIX}/r/${this.roomId}/pres/${this.peerId}`,
@@ -429,7 +464,6 @@ export class MqttMultiplayer {
           if (this.peers.has(p.peerId)) this.blockPeer(p.peerId);
           return;
         }
-        const isNew = !this.peers.has(p.peerId);
         this.peers.set(p.peerId, {
           peerId: p.peerId,
           name: p.name || '装甲兵',
@@ -442,11 +476,22 @@ export class MqttMultiplayer {
           lastSeen: Date.now(),
           mod: p.mod || 'default',
           fp: p.fp || '',
+          voice: Boolean(p.voice),
         });
-        if (isNew) {
-          this.emitRoster();
-        } else {
-          this.emitRoster();
+        this.emitRoster();
+        return;
+      }
+
+      if (sub.startsWith('vc/')) {
+        const senderId = sub.slice(3);
+        if (!senderId || senderId === this.peerId || this.blockedPeers.has(senderId)) return;
+        const peer = this.peers.get(senderId);
+        if (peer && this.isFingerprintBanned(peer.fp)) return;
+        const sep = raw.indexOf('|');
+        if (sep > 0) {
+          const sr = parseInt(raw.slice(0, sep), 10) || 6000;
+          const b64 = raw.slice(sep + 1);
+          this.cb.onVoiceChunk?.(senderId, b64, sr);
         }
         return;
       }
@@ -483,7 +528,11 @@ export class MqttMultiplayer {
         const { s, e } = JSON.parse(raw) as { s: string; e: NetRoomEvent };
         if (s === this.peerId || this.blockedPeers.has(s)) return;
         const peer = this.peers.get(s);
-        if (e.t !== 'start' && (!peer || this.isFingerprintBanned(peer.fp))) return;
+        // Never drop 'start' or 'voice' signaling before initial presence packet arrives.
+        if (e.t !== 'start' && e.t !== 'voice' && (!peer || this.isFingerprintBanned(peer.fp))) {
+          return;
+        }
+        if (peer && this.isFingerprintBanned(peer.fp)) return;
         this.cb.onRoomEvent(e, s);
       }
     } catch {

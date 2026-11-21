@@ -8,6 +8,14 @@ export default defineConfig({
     assetsDir: 'assets',
     sourcemap: false,
     chunkSizeWarningLimit: 1200,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          three: ['three'],
+          mqtt: ['mqtt'],
+        },
+      },
+    },
   },
   server: {
     host: true,

@@ -17,6 +17,8 @@ export type GameMode = 'demo' | 'campaign' | 'pvp' | 'coop' | 'workshop';
 
 export type CameraPreset = 'diorama' | 'chase' | 'orbit';
 
+export type QualityTier = 'high' | 'medium' | 'low';
+
 export type EnemyArchetype = 'scout' | 'raider' | 'twin' | 'juggernaut';
 
 export type PowerUpKind = 'star' | 'shield' | 'freeze' | 'fortress' | 'bomb' | 'repair';
@@ -47,6 +49,7 @@ export interface PeerPresence {
   lastSeen: number;
   mod?: string;
   fp?: string;
+  voice?: boolean;
 }
 
 export interface NetTankSnapshot {
@@ -153,6 +156,7 @@ export interface NetPowerUpEvent {
 
 export interface NetAiSyncEvent {
   t: 'ai';
+  seq?: number;
   waveLeft: number;
   baseAlive: boolean;
   enemies: Array<[string, EnemyArchetype, number, number, number, number, number, number, number, number]>;

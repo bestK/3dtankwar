@@ -20,6 +20,37 @@ const KIND_LABELS: Record<PowerUpKind, string> = {
   repair: '修',
 };
 
+let sharedBoxGeo: THREE.BufferGeometry | null = null;
+let sharedPlateGeo: THREE.PlaneGeometry | null = null;
+let sharedRingGeo: THREE.RingGeometry | null = null;
+const badgeTexCache = new Map<PowerUpKind, THREE.CanvasTexture>();
+
+function getBadgeTexture(kind: PowerUpKind): THREE.CanvasTexture {
+  let tex = badgeTexCache.get(kind);
+  if (tex) return tex;
+
+  const col = KIND_COLORS[kind];
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#10161f';
+  ctx.fillRect(0, 0, 128, 128);
+  ctx.strokeStyle = '#' + col.toString(16).padStart(6, '0');
+  ctx.lineWidth = 10;
+  ctx.strokeRect(10, 10, 108, 108);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '900 66px "Noto Sans SC", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(KIND_LABELS[kind], 64, 68);
+
+  tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  badgeTexCache.set(kind, tex);
+  return tex;
+}
+
 export class PowerUpItem {
   public readonly id: string;
   public readonly kind: PowerUpKind;
@@ -32,6 +63,9 @@ export class PowerUpItem {
 
   private crateGroup = new THREE.Group();
   private ringMesh: THREE.Mesh;
+  private bodyMat: THREE.MeshStandardMaterial;
+  private plateMat: THREE.MeshBasicMaterial;
+  private ringMat: THREE.MeshBasicMaterial;
 
   constructor(id: string, kind: PowerUpKind, x: number, z: number) {
     this.id = id;
@@ -40,41 +74,28 @@ export class PowerUpItem {
     this.z = z;
     this.group.position.set(x, 0, z);
 
+    if (!sharedBoxGeo) {
+      sharedBoxGeo = new RoundedBoxGeometry(0.76, 0.56, 0.76, 1, 0.08);
+      sharedPlateGeo = new THREE.PlaneGeometry(0.62, 0.62);
+      sharedRingGeo = new THREE.RingGeometry(0.56, 0.68, 24);
+      sharedRingGeo.rotateX(-Math.PI / 2);
+    }
+
     const col = KIND_COLORS[kind];
-    const bodyMat = new THREE.MeshStandardMaterial({
+    this.bodyMat = new THREE.MeshStandardMaterial({
       color: 0x1c2430,
       roughness: 0.35,
       metalness: 0.75,
       emissive: new THREE.Color(col),
-      emissiveIntensity: 0.35,
+      emissiveIntensity: 0.38,
     });
 
-    const box = new THREE.Mesh(new RoundedBoxGeometry(0.76, 0.56, 0.76, 2, 0.08), bodyMat);
+    const box = new THREE.Mesh(sharedBoxGeo, this.bodyMat);
     box.castShadow = true;
     this.crateGroup.add(box);
 
-    // Top Holographic Emblem Badge
-    const canvas = document.createElement('canvas');
-    canvas.width = 128;
-    canvas.height = 128;
-    const ctx = canvas.getContext('2d')!;
-    ctx.fillStyle = '#10161f';
-    ctx.fillRect(0, 0, 128, 128);
-    ctx.strokeStyle = '#' + col.toString(16).padStart(6, '0');
-    ctx.lineWidth = 10;
-    ctx.strokeRect(10, 10, 108, 108);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '900 66px "Noto Sans SC", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(KIND_LABELS[kind], 64, 68);
-
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    const topPlate = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.62, 0.62),
-      new THREE.MeshBasicMaterial({ map: tex }),
-    );
+    this.plateMat = new THREE.MeshBasicMaterial({ map: getBadgeTexture(kind) });
+    const topPlate = new THREE.Mesh(sharedPlateGeo!, this.plateMat);
     topPlate.rotation.x = -Math.PI / 2;
     topPlate.position.y = 0.29;
     this.crateGroup.add(topPlate);
@@ -82,19 +103,15 @@ export class PowerUpItem {
     this.crateGroup.position.y = 0.55;
     this.group.add(this.crateGroup);
 
-    const ringGeo = new THREE.RingGeometry(0.56, 0.68, 24);
-    ringGeo.rotateX(-Math.PI / 2);
-    this.ringMesh = new THREE.Mesh(
-      ringGeo,
-      new THREE.MeshBasicMaterial({
-        color: new THREE.Color(col).multiplyScalar(2.0),
-        transparent: true,
-        opacity: 0.75,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-        side: THREE.DoubleSide,
-      }),
-    );
+    this.ringMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(col).multiplyScalar(2.0),
+      transparent: true,
+      opacity: 0.75,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    });
+    this.ringMesh = new THREE.Mesh(sharedRingGeo!, this.ringMat);
     this.ringMesh.position.y = 0.05;
     this.group.add(this.ringMesh);
   }
@@ -112,5 +129,11 @@ export class PowerUpItem {
     if (this.life - this.age < 3.0) {
       this.group.visible = Math.sin(elapsed * 22) > -0.2;
     }
+  }
+
+  public dispose(): void {
+    this.bodyMat.dispose();
+    this.plateMat.dispose();
+    this.ringMat.dispose();
   }
 }

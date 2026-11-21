@@ -3,7 +3,7 @@ import { GameApp, GameUiBridge, HudSnapshot } from './GameApp';
 import { isValidModSelection, loadVehicleMod, parseMod, VEHICLE_MODS } from './mod/ModCatalog';
 import { computeBrowserFingerprint } from './net/Fingerprint';
 import { VoiceChat } from './net/VoiceChat';
-import { PeerPresence, PublicRoomBeacon, TileType } from './types';
+import { CameraPreset, GameMode, PeerPresence, PublicRoomBeacon, QualityTier, TileType } from './types';
 
 function $(selector: string): HTMLElement | null {
   return document.querySelector(selector);
@@ -42,6 +42,17 @@ window.addEventListener('DOMContentLoaded', () => {
   const settingsPopover = $('#settings-popover')!;
   const rangeTurretSpeed = $('#range-turret-speed') as HTMLInputElement;
   const turretSpeedValue = $('#turret-speed-value')!;
+  const qualityButtons = $all('.quality-btn');
+
+  // Pre-allocate 20 enemy pip elements once so onHudUpdate never churns DOM nodes at 60fps
+  const MAX_HUD_PIPS = 20;
+  const pipNodes: HTMLSpanElement[] = [];
+  for (let i = 0; i < MAX_HUD_PIPS; i++) {
+    const pip = document.createElement('span');
+    pip.className = 'enemy-pip hidden' + (i % 4 === 1 ? ' heavy' : '');
+    hudEnemyStrip.appendChild(pip);
+    pipNodes.push(pip);
+  }
 
   // Touch / mobile
   const isTouchUi =
@@ -64,7 +75,6 @@ window.addEventListener('DOMContentLoaded', () => {
   const btnSettingsClose = $('#btn-settings-close')!;
   const btnSettingsResume = $('#btn-settings-resume')!;
   if (isTouchUi) {
-    // Keep only chat + settings in the top bar; tuck the rest into the popover.
     for (const chip of [btnCamera, btnSlowmo, btnAudio, btnVoiceHud, btnMuteHud, btnFullscreen]) {
       settingsTools.appendChild(chip);
     }
@@ -79,6 +89,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const chatLog = $('#chat-log')!;
   const chatBar = $('#chat-bar')!;
   const chatInput = $('#chat-input') as HTMLInputElement;
+  const btnChatSend = $('#btn-chat-send')!;
   const voiceToggles = $all('.voice-toggle');
   const voiceMutes = $all('.voice-mute');
   const voiceAudioRoot = $('#voice-audio-root')!;
@@ -88,6 +99,7 @@ window.addEventListener('DOMContentLoaded', () => {
   // Workshop Sculpting Palette
   const workshopBar = $('#workshop-bar')!;
   const brushButtons = $all('.brush-chip');
+  const btnWsFine = $('#btn-ws-fine')!;
   const btnWsTemplate = $('#btn-ws-template')!;
   const btnWsClear = $('#btn-ws-clear')!;
   const btnWsPlay = $('#btn-ws-play')!;
@@ -165,9 +177,10 @@ window.addEventListener('DOMContentLoaded', () => {
     toast.className = 'feed-toast';
     toast.textContent = msg;
     eventFeed.appendChild(toast);
+    while (eventFeed.children.length > 4) eventFeed.firstElementChild?.remove();
     setTimeout(() => {
       toast.remove();
-    }, 2900);
+    }, 2650);
   };
 
   const addChatMessage = (
@@ -204,12 +217,32 @@ window.addEventListener('DOMContentLoaded', () => {
 
   const peerNames = new Map<string, string>();
   const speakingPeers = new Set<string>();
+  const remoteAudioEls = new Map<string, HTMLAudioElement>();
+
+  const tryPlayRemoteAudio = (audio: HTMLAudioElement) => {
+    audio.muted = false;
+    audio.volume = 1.0;
+    if (audio.paused) {
+      void audio.play().catch(() => {
+        // Retried automatically on next user interaction; fallback WebAudio covers meantime.
+      });
+    }
+  };
+
+  const unlockAllRemoteAudio = () => {
+    app.voice.unlockAudio();
+    for (const audio of remoteAudioEls.values()) {
+      tryPlayRemoteAudio(audio);
+    }
+  };
 
   const applySpeakingHighlights = () => {
     document.querySelectorAll<HTMLElement>('[data-peer]').forEach((el) => {
       el.classList.toggle('speaking', speakingPeers.has(el.dataset.peer || ''));
     });
-    const names = [...speakingPeers].map((id) => peerNames.get(id) || '玩家');
+    const names = [...speakingPeers].map((id) =>
+      id === app.net.peerId ? app.net.callsign : peerNames.get(id) || '玩家',
+    );
     voiceSpeakingNames.textContent = names.join('、');
     voiceSpeakingChip.classList.toggle('hidden', names.length === 0);
   };
@@ -219,16 +252,15 @@ window.addEventListener('DOMContentLoaded', () => {
     const kick = document.createElement('button');
     kick.className = 'kick-btn';
     kick.textContent = label;
-    kick.title = '发起投票踢出该玩家，通过后 10 分钟内禁止其浏览器进入';
     kick.onclick = (e) => {
       e.stopPropagation();
-      if (!app.startVoteKick(peerId)) showToast('当前已有投票进行中');
+      if (!app.startVoteKick(peerId)) showToast('投票进行中');
     };
     parent.appendChild(kick);
   };
 
   const setVoiceUi = (state: { active: boolean; pending: boolean; muted: boolean }) => {
-    const label = state.pending ? '连接中…' : state.active ? '语音中' : '语音';
+    const label = state.pending ? '连接中…' : state.active ? '通话中' : '开麦';
     voiceToggles.forEach((btn) => {
       btn.textContent = label;
       btn.classList.toggle('active', state.active && !state.pending);
@@ -236,11 +268,12 @@ window.addEventListener('DOMContentLoaded', () => {
     });
     voiceMutes.forEach((btn) => {
       btn.classList.toggle('hidden', !state.active);
-      btn.textContent = state.muted ? '开麦' : '闭麦';
+      btn.textContent = state.muted ? '已闭麦' : '闭麦';
       btn.classList.toggle('active', state.muted);
     });
     if (!state.active && !state.pending) {
-      speakingPeers.clear();
+      speakingPeers.delete(app.net.peerId);
+      app.setSpeakingPeer(app.net.peerId, false);
       applySpeakingHighlights();
     }
   };
@@ -255,90 +288,145 @@ window.addEventListener('DOMContentLoaded', () => {
     url.searchParams.set('mode', currentSelectedMode === 'coop' ? 'coop' : 'pvp');
     navigator.clipboard
       ?.writeText(url.toString())
-      .then(() => showToast(`邀请链接已复制: #${roomId}`))
+      .then(() => showToast(`邀请已复制 #${roomId}`))
       .catch(() => {
-        prompt('请复制邀请链接：', url.toString());
+        prompt('邀请链接：', url.toString());
       });
   };
+
+  // Cached HUD values for zero-allocation dirty checking in onHudUpdate
+  let prevHudMode: GameMode | '' = '';
+  let prevTouchCombat: boolean | null = null;
+  let prevVoiceAvail: boolean | null = null;
+  let prevMuteVis: boolean | null = null;
+  let prevStageIdx = -1;
+  let prevPipsShown = -1;
+  let prevRoomCode = '';
+  let prevHpPct = -1;
+  let prevLivesKey = '';
+  let prevStars = -1;
+  let prevScore = -1;
+  let prevChargePct = -1;
+  let prevCamPreset: CameraPreset | '' = '';
+  let prevSlowMo: boolean | null = null;
 
   const uiBridge: GameUiBridge = {
     onHudUpdate: (hud: HudSnapshot) => {
       if (hud.mode === 'demo') {
-        hudTop.classList.add('hidden');
-        chargeWrap.classList.add('hidden');
-        mobileControls.classList.add('hidden');
-        document.body.classList.remove('mobile-combat');
-        if (!chatBar.classList.contains('hidden')) closeChat();
-        if (chatLog.firstChild) chatLog.innerHTML = '';
+        if (prevHudMode !== 'demo') {
+          prevHudMode = 'demo';
+          hudTop.classList.add('hidden');
+          chargeWrap.classList.add('hidden');
+          mobileControls.classList.add('hidden');
+          document.body.classList.remove('mobile-combat');
+          if (!chatBar.classList.contains('hidden')) closeChat();
+          if (chatLog.firstChild) chatLog.innerHTML = '';
+        }
         return;
       }
-      hudTop.classList.remove('hidden');
+
+      if (prevHudMode === 'demo' || prevHudMode === '') {
+        hudTop.classList.remove('hidden');
+      }
+
+      const modeChanged = prevHudMode !== hud.mode;
+      prevHudMode = hud.mode;
 
       const touchCombat =
         (hud.mode === 'campaign' || hud.mode === 'pvp' || hud.mode === 'coop') && !app.matchEnded;
-      mobileControls.classList.toggle('hidden', !touchCombat);
-      document.body.classList.toggle('mobile-combat', touchCombat);
-
-      // Voice is an online-room feature only
-      const voiceAvailable = hud.mode === 'pvp' || hud.mode === 'coop';
-      btnVoiceHud.classList.toggle('hidden', !voiceAvailable);
-      btnMuteHud.classList.toggle('hidden', !voiceAvailable || !app.voice.active);
-
-      // Stage & wave
-      if (hud.mode === 'campaign' || hud.mode === 'coop') {
-        hudStagePill.textContent = `第 0${hud.stageIndex + 1} 关`;
-        hudStagePill.classList.remove('hidden');
-        hudEnemyStrip.classList.remove('hidden');
-
-        // Draw remaining enemy pips
-        hudEnemyStrip.innerHTML = '';
-        for (let i = 0; i < Math.min(20, hud.enemyWaveLeft); i++) {
-          const pip = document.createElement('span');
-          pip.className = 'enemy-pip' + (i % 4 === 1 ? ' heavy' : '');
-          hudEnemyStrip.appendChild(pip);
-        }
-      } else {
-        hudStagePill.classList.add('hidden');
-        hudEnemyStrip.classList.add('hidden');
+      if (touchCombat !== prevTouchCombat) {
+        prevTouchCombat = touchCombat;
+        mobileControls.classList.toggle('hidden', !touchCombat);
+        document.body.classList.toggle('mobile-combat', touchCombat);
       }
 
-      // Online Room Badge
-      if (hud.mode === 'pvp' || hud.mode === 'coop') {
-        hudRoomChip.classList.remove('hidden');
+      const isOnline = hud.mode === 'pvp' || hud.mode === 'coop';
+      if (isOnline !== prevVoiceAvail) {
+        prevVoiceAvail = isOnline;
+        btnVoiceHud.classList.toggle('hidden', !isOnline);
+        btnSlowmo.classList.toggle('hidden', isOnline);
+        hudRoomChip.classList.toggle('hidden', !isOnline);
+      }
+
+      const muteVis = isOnline && app.voice.active;
+      if (muteVis !== prevMuteVis) {
+        prevMuteVis = muteVis;
+        btnMuteHud.classList.toggle('hidden', !muteVis);
+      }
+
+      if (isOnline && app.net.roomId !== prevRoomCode) {
+        prevRoomCode = app.net.roomId;
         hudRoomCode.textContent = `#${app.net.roomId}`;
-      } else {
-        hudRoomChip.classList.add('hidden');
       }
 
-      // Player stats
-      const hpPct = Math.max(0, Math.min(100, (hud.hp / Math.max(1, hud.maxHp)) * 100));
-      hudHpFill.style.width = `${hpPct}%`;
-      hudHpFill.classList.toggle('low', hpPct <= 34);
-
-      hudLives.innerHTML =
-        hud.mode === 'pvp'
-          ? `PVP`
-          : `<span>♥</span>×${Math.max(0, hud.lives)}`;
-
-      hudStars.textContent = '★'.repeat(Math.max(1, Math.min(3, hud.stars)));
-      hudScore.textContent = hud.score.toString().padStart(6, '0');
-
-      // Charge bar
-      if (hud.chargeRatio > 0.05) {
-        chargeWrap.classList.remove('hidden');
-        chargeFill.style.width = `${Math.min(100, Math.round(hud.chargeRatio * 100))}%`;
-      } else {
-        chargeWrap.classList.add('hidden');
+      const showWave = hud.mode === 'campaign' || hud.mode === 'coop';
+      if (modeChanged) {
+        hudStagePill.classList.toggle('hidden', !showWave);
+        hudEnemyStrip.classList.toggle('hidden', !showWave);
+      }
+      if (showWave) {
+        if (hud.stageIndex !== prevStageIdx) {
+          prevStageIdx = hud.stageIndex;
+          hudStagePill.textContent = `第 0${hud.stageIndex + 1} 关`;
+        }
+        const pipTarget = Math.min(MAX_HUD_PIPS, hud.enemyWaveLeft);
+        if (pipTarget !== prevPipsShown) {
+          prevPipsShown = pipTarget;
+          for (let i = 0; i < MAX_HUD_PIPS; i++) {
+            pipNodes[i].classList.toggle('hidden', i >= pipTarget);
+          }
+        }
       }
 
-      // Tool buttons
-      btnCamera.textContent =
-        hud.cameraPreset === 'diorama'
-          ? '沙盘视角'
-          : hud.cameraPreset === 'chase'
-            ? '追尾视角'
-            : '自由环视';
-      btnSlowmo.classList.toggle('active', hud.slowMo);
+      const hpPct = Math.round(Math.max(0, Math.min(100, (hud.hp / Math.max(1, hud.maxHp)) * 100)));
+      if (hpPct !== prevHpPct) {
+        prevHpPct = hpPct;
+        hudHpFill.style.width = `${hpPct}%`;
+        hudHpFill.classList.toggle('low', hpPct <= 34);
+      }
+
+      const livesKey = hud.mode === 'pvp' ? 'PVP' : `${Math.max(0, hud.lives)}`;
+      if (livesKey !== prevLivesKey) {
+        prevLivesKey = livesKey;
+        hudLives.innerHTML = hud.mode === 'pvp' ? 'PVP' : `<span>♥</span>×${livesKey}`;
+      }
+
+      const clampedStars = Math.max(1, Math.min(3, hud.stars));
+      if (clampedStars !== prevStars) {
+        prevStars = clampedStars;
+        hudStars.textContent = '★'.repeat(clampedStars);
+      }
+
+      if (hud.score !== prevScore) {
+        prevScore = hud.score;
+        hudScore.textContent = hud.score.toString().padStart(6, '0');
+      }
+
+      const chargePct = hud.chargeRatio > 0.05 ? Math.min(100, Math.round(hud.chargeRatio * 100)) : 0;
+      if (chargePct !== prevChargePct) {
+        prevChargePct = chargePct;
+        if (chargePct > 0) {
+          chargeWrap.classList.remove('hidden');
+          chargeFill.style.width = `${chargePct}%`;
+        } else {
+          chargeWrap.classList.add('hidden');
+        }
+      }
+
+      if (hud.cameraPreset !== prevCamPreset) {
+        prevCamPreset = hud.cameraPreset;
+        btnCamera.textContent =
+          hud.cameraPreset === 'diorama'
+            ? '沙盘视角'
+            : hud.cameraPreset === 'chase'
+              ? '追尾视角'
+              : '自由环视';
+      }
+
+      if (hud.slowMo !== prevSlowMo) {
+        prevSlowMo = hud.slowMo;
+        btnSlowmo.classList.toggle('active', hud.slowMo);
+      }
     },
 
     onNetStatus: (st, url, ping) => {
@@ -352,25 +440,28 @@ window.addEventListener('DOMContentLoaded', () => {
         netLabel.textContent = 'broker.emqx.io';
       }
 
-      const pingStr = ping !== null ? `${ping}ms` : '--';
+      const pingStr = ping !== null ? `${ping} ms` : '--';
       netPing.textContent = pingStr;
       hudNetPing.textContent = pingStr;
     },
 
     onRosterUpdate: (peers: PeerPresence[], hostId: string | null) => {
-      // Lobby roster
       lobbyRoster.innerHTML = '';
       peers.forEach((p) => {
         const item = document.createElement('div');
         item.className = 'lobby-player' + (p.peerId === hostId ? ' host' : '');
         item.dataset.peer = p.peerId;
         const colHex = '#' + p.color.toString(16).padStart(6, '0');
-        item.innerHTML = `<span class="swatch" style="background:${colHex}"></span><span>${p.name}${p.peerId === app.net.peerId ? ' (你)' : ''}</span>${p.peerId === hostId ? ' 👑' : ''}`;
+        const swatch = document.createElement('span');
+        swatch.className = 'swatch';
+        swatch.style.background = colHex;
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = `${p.name}${p.peerId === app.net.peerId ? ' (你)' : ''}${p.peerId === hostId ? ' 👑' : ''}`;
+        item.append(swatch, nameSpan);
         addKickButton(item, p.peerId);
         lobbyRoster.appendChild(item);
       });
 
-      // Combat HUD scoreboard (PvP and Co-op)
       if (app.mode === 'pvp' || app.mode === 'coop') {
         hudScoreboard.classList.remove('hidden');
         hudScoreboard.innerHTML = '';
@@ -379,7 +470,15 @@ window.addEventListener('DOMContentLoaded', () => {
           pill.className = 'roster-pill';
           pill.dataset.peer = p.peerId;
           const colHex = '#' + p.color.toString(16).padStart(6, '0');
-          pill.innerHTML = `<span class="roster-swatch" style="background:${colHex}"></span><span>${p.name}</span><span class="roster-kills">${p.kills} 击毁</span>`;
+          const sw = document.createElement('span');
+          sw.className = 'roster-swatch';
+          sw.style.background = colHex;
+          const nm = document.createElement('span');
+          nm.textContent = p.name;
+          const kl = document.createElement('span');
+          kl.className = 'roster-kills';
+          kl.textContent = `${p.kills} 击毁`;
+          pill.append(sw, nm, kl);
           addKickButton(pill, p.peerId, '踢');
           hudScoreboard.appendChild(pill);
         });
@@ -396,7 +495,7 @@ window.addEventListener('DOMContentLoaded', () => {
       rooms.forEach((r) => {
         const btn = document.createElement('button');
         btn.className = 'room-beacon';
-        btn.innerHTML = `<span>#${r.roomId}</span><span>[${r.mode === 'pvp' ? '死斗' : '守卫'}]</span><span>${r.count}人</span>`;
+        btn.innerHTML = `<span>#${r.roomId}</span><span>${r.mode === 'pvp' ? '死斗' : '守卫'}</span><span>${r.count} 人</span>`;
         btn.onclick = () => {
           if (!ensureCanEnter()) return;
           inputRoom.value = r.roomId;
@@ -404,7 +503,7 @@ window.addEventListener('DOMContentLoaded', () => {
           joinRoomWithVoice(r.roomId, r.mode);
           closeChat();
           chatLog.innerHTML = '';
-          showToast(`已切换至公开房间 #${r.roomId}`);
+          showToast(`房间 #${r.roomId}`);
         };
         activeRoomsStrip.appendChild(btn);
       });
@@ -423,6 +522,7 @@ window.addEventListener('DOMContentLoaded', () => {
       resultModal.classList.remove('hidden');
       mobileControls.classList.add('hidden');
       document.body.classList.remove('mobile-combat');
+      prevTouchCombat = false;
       resetTouchUi();
       closeSettings();
       closeChat();
@@ -449,6 +549,8 @@ window.addEventListener('DOMContentLoaded', () => {
       hudTop.classList.add('hidden');
       mobileControls.classList.add('hidden');
       document.body.classList.remove('mobile-combat');
+      prevHudMode = '';
+      prevTouchCombat = null;
       resetTouchUi();
       closeSettings();
       exitLandscape();
@@ -480,17 +582,46 @@ window.addEventListener('DOMContentLoaded', () => {
       }
       activeVoteId = state.voteId;
       votePanel.classList.remove('hidden');
-      voteTitle.textContent = state.isInitiator
-        ? `你发起投票踢出 ${state.targetName}`
-        : `投票踢出 ${state.targetName}`;
+      voteTitle.textContent = `移出 ${state.targetName}`;
       const remaining = Math.max(0, Math.ceil((state.until - Date.now()) / 1000));
-      voteDetail.textContent = `同意 ${state.yes} / 需要 ${state.required} · 反对 ${state.no} · 剩余 ${remaining}s${state.voted ? ' · 你已投票' : ''}`;
+      voteDetail.textContent = `同意 ${state.yes}/${state.required} · 反对 ${state.no} · ${remaining}s`;
       btnVoteYes.disabled = state.voted;
       btnVoteNo.disabled = state.voted;
     },
   };
 
   const app = new GameApp(canvasRoot, uiBridge);
+
+  // ---- Graphics Quality Tier (persisted) ----
+  const QUALITY_KEY = 'agy_tank_quality';
+  const savedQuality = localStorage.getItem(QUALITY_KEY) as QualityTier | null;
+  const applyQualitySelection = (tier: QualityTier, persist = true) => {
+    app.setQualityTier(tier);
+    qualityButtons.forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.quality === tier);
+    });
+    if (persist) {
+      try {
+        localStorage.setItem(QUALITY_KEY, tier);
+      } catch {
+        // ignore
+      }
+    }
+  };
+  applyQualitySelection(
+    savedQuality === 'high' || savedQuality === 'medium' || savedQuality === 'low'
+      ? savedQuality
+      : app.qualityTier,
+    false,
+  );
+  qualityButtons.forEach((btn) => {
+    btn.onclick = () => {
+      const q = btn.dataset.quality as QualityTier;
+      if (q === 'high' || q === 'medium' || q === 'low') {
+        applyQualitySelection(q, true);
+      }
+    };
+  });
 
   // ---- Mobile: fullscreen landscape + virtual sticks ----
   type LockableOrientation = ScreenOrientation & {
@@ -511,7 +642,7 @@ window.addEventListener('DOMContentLoaded', () => {
         await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
       }
     } catch {
-      // Fullscreen is optional; the rotate hint still guides the player.
+      // Optional
     }
     try {
       const orientation = screen.orientation as LockableOrientation | undefined;
@@ -520,13 +651,12 @@ window.addEventListener('DOMContentLoaded', () => {
         orientationLocked = true;
       }
     } catch {
-      // iOS Safari does not support orientation lock.
+      // iOS Safari fallback
     }
   };
 
   const beginTouchCombat = (): void => {
     rotateHint.classList.remove('hidden');
-    if (isTouchUi) showToast('左摇杆驾驶 · 右摇杆瞄准，松手开炮，长按蓄力');
     void enterLandscape();
   };
 
@@ -535,7 +665,7 @@ window.addEventListener('DOMContentLoaded', () => {
     try {
       if (orientationLocked) (screen.orientation as LockableOrientation | undefined)?.unlock?.();
     } catch {
-      // Ignore browsers that reject unlock.
+      // ignore
     }
     orientationLocked = false;
     if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
@@ -585,6 +715,7 @@ window.addEventListener('DOMContentLoaded', () => {
     zone.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      unlockAllRemoteAudio();
       pointerId = e.pointerId;
       zone.setPointerCapture(e.pointerId);
       apply(e.clientX, e.clientY);
@@ -608,7 +739,6 @@ window.addEventListener('DOMContentLoaded', () => {
   };
 
   setupStick(stickMove, stickMoveKnob, (x, y) => app.setTouchMove(x, y));
-  // Right stick aims; holding it charges, releasing fires.
   setupStick(stickAim, stickAimKnob, (x, y) => app.setTouchAim(x, y), {
     onPress: () => {
       stickAim.classList.add('firing');
@@ -633,24 +763,22 @@ window.addEventListener('DOMContentLoaded', () => {
   btnRotateDismiss.onclick = () => rotateHint.classList.add('hidden');
   btnFullscreen.onclick = () => void enterLandscape();
   if (isTouchUi && !canLockOrientation) {
-    btnRotate.textContent = '知道了，手动横屏';
+    btnRotate.textContent = '继续';
     btnRotateDismiss.classList.add('hidden');
     btnFullscreen.classList.add('hidden');
   }
 
-  // If a match starts without a direct gesture (e.g. host launches remotely),
-  // the first tap in combat promotes the page to fullscreen landscape.
-  window.addEventListener(
-    'pointerdown',
-    () => {
-      if (!isTouchUi || document.fullscreenElement || !app.isCombatMode()) return;
+  // Global user-gesture audio unlocker: guarantees WebRTC <audio> and WebAudio are never blocked
+  const onAnyUserGesture = () => {
+    unlockAllRemoteAudio();
+    if (isTouchUi && !document.fullscreenElement && app.isCombatMode()) {
       void enterLandscape();
-    },
-    { passive: true },
-  );
+    }
+  };
+  window.addEventListener('pointerdown', onAnyUserGesture, { passive: true });
+  window.addEventListener('touchstart', onAnyUserGesture, { passive: true });
+  window.addEventListener('keydown', () => unlockAllRemoteAudio(), { passive: true });
 
-  // Suppress the browser's long-press menu / text selection everywhere except
-  // in text fields, where copy & paste must keep working while chatting.
   const isEditableTarget = (target: EventTarget | null): boolean => {
     const el = target as Element | null;
     return !!el?.closest('input, textarea, [contenteditable="true"]');
@@ -691,7 +819,7 @@ window.addEventListener('DOMContentLoaded', () => {
     try {
       localStorage.setItem(BAN_KEY, JSON.stringify(bans));
     } catch {
-      // Storage can be unavailable in private/incognito mode.
+      // ignore
     }
   };
 
@@ -711,7 +839,7 @@ window.addEventListener('DOMContentLoaded', () => {
     const remaining = until - Date.now();
     if (remaining > 0) {
       banBanner.classList.remove('hidden');
-      banBanner.textContent = `该浏览器已被投票移出，剩余 ${formatRemaining(remaining)} 后才能进入`;
+      banBanner.textContent = `冷却剩余 ${formatRemaining(remaining)}`;
       if (banTicker === null) banTicker = window.setInterval(updateBanBanner, 1000);
     } else {
       banBanner.classList.add('hidden');
@@ -736,7 +864,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const ensureCanEnter = (): boolean => {
     if (browserFp && bannedUntilFor(browserFp) > Date.now()) {
       updateBanBanner();
-      showToast('该浏览器仍处于踢出冷却中');
+      showToast('仍处于移出冷却中');
       return false;
     }
     return true;
@@ -758,6 +886,13 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // In-battle chat
   let chatComposing = false;
+  const submitChatInput = () => {
+    const text = chatInput.value;
+    chatInput.value = '';
+    closeChat();
+    app.sendChat(text, !app.isCombatMode() && isOnlineLobby());
+  };
+
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || e.isComposing) return;
     const target = e.target as HTMLElement | null;
@@ -783,6 +918,7 @@ window.addEventListener('DOMContentLoaded', () => {
   };
   btnChatMobile.onclick = openChatFromUi;
   btnChatLobby.onclick = openChatFromUi;
+  btnChatSend.onclick = submitChatInput;
 
   chatInput.addEventListener('compositionstart', () => {
     chatComposing = true;
@@ -793,10 +929,7 @@ window.addEventListener('DOMContentLoaded', () => {
   chatInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.isComposing && !chatComposing && e.keyCode !== 229) {
       e.preventDefault();
-      const text = chatInput.value;
-      chatInput.value = '';
-      closeChat();
-      app.sendChat(text, !app.isCombatMode() && isOnlineLobby());
+      submitChatInput();
     } else if (e.key === 'Escape') {
       e.preventDefault();
       chatInput.value = '';
@@ -804,49 +937,77 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Voice chat (WebRTC mesh, signaling over the room MQTT channel)
-  app.voice.onStatusChange = setVoiceUi;
+  // ---- Voice Chat (WebRTC + Automatic WebAudio Fallback) ----
+  app.voice.isRemoteElementPlaying = (peerId) => {
+    const el = remoteAudioEls.get(peerId);
+    return Boolean(el && !el.paused && !el.muted && el.readyState >= 2);
+  };
+
+  app.voice.onStatusChange = (st) => {
+    setVoiceUi(st);
+    prevMuteVis = null;
+  };
+
   app.voice.onRemoteStream = (peerId, stream) => {
-    let audio = document.getElementById(`voice-audio-${peerId}`) as HTMLAudioElement | null;
+    let audio = remoteAudioEls.get(peerId);
     if (!audio) {
       audio = document.createElement('audio');
       audio.id = `voice-audio-${peerId}`;
       audio.autoplay = true;
-      audio.setAttribute('playsinline', '');
+      audio.muted = false;
+      audio.volume = 1.0;
+      audio.setAttribute('playsinline', 'true');
+      audio.setAttribute('webkit-playsinline', 'true');
       voiceAudioRoot.appendChild(audio);
+      remoteAudioEls.set(peerId, audio);
     }
-    audio.srcObject = stream;
-    void audio.play().catch(() => {
-      // Autoplay can be blocked until the next user gesture.
-    });
+    if (audio.srcObject !== stream) {
+      audio.srcObject = stream;
+    }
+    tryPlayRemoteAudio(audio);
   };
+
   app.voice.onRemoteGone = (peerId) => {
-    document.getElementById(`voice-audio-${peerId}`)?.remove();
+    const audio = remoteAudioEls.get(peerId);
+    if (audio) {
+      try {
+        audio.pause();
+        audio.srcObject = null;
+      } catch {
+        // ignore
+      }
+      audio.remove();
+      remoteAudioEls.delete(peerId);
+    }
     speakingPeers.delete(peerId);
+    app.setSpeakingPeer(peerId, false);
     applySpeakingHighlights();
   };
+
   app.voice.onSpeakingChange = (peerId, speaking) => {
     if (speaking) speakingPeers.add(peerId);
     else speakingPeers.delete(peerId);
+    app.setSpeakingPeer(peerId, speaking);
     applySpeakingHighlights();
   };
   setVoiceUi({ active: false, pending: false, muted: false });
 
   const toggleVoice = async () => {
+    unlockAllRemoteAudio();
     if (app.voice.active) {
       app.voice.disable();
       return;
     }
     if (app.voice.busy) return;
-    if (!VoiceChat.supported) {
-      showToast('当前浏览器不支持 WebRTC 语音');
+    if (!VoiceChat.micSupported) {
+      showToast('需要 HTTPS 或本地环境以访问麦克风');
       return;
     }
     try {
       await app.voice.enable();
       showToast('语音已开启');
     } catch {
-      showToast('无法开启语音，请允许麦克风权限');
+      showToast('麦克风权限未开启');
     }
   };
 
@@ -857,7 +1018,7 @@ window.addEventListener('DOMContentLoaded', () => {
     btn.onclick = () => app.voice.toggleMute();
   });
 
-  // Vehicle mod selection (applies to the player and is shared via presence)
+  // Vehicle mod selection
   const MOD_KEY = 'agy_tank_mod';
   let currentMod = localStorage.getItem(MOD_KEY) || 'default';
   if (!isValidModSelection(currentMod)) currentMod = 'default';
@@ -890,10 +1051,12 @@ window.addEventListener('DOMContentLoaded', () => {
 
   const joinRoomWithVoice = (roomId: string, mode: 'pvp' | 'coop') => {
     const target = roomId.trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) || '1985';
-    if (app.net.roomId !== target) {
+    if (app.net.roomId !== target && app.voice.active) {
       app.voice.disable();
     }
-    app.net.joinRoom(roomId, mode);
+    app.voice.setRoomListening(true);
+    app.net.joinRoom(target, mode);
+    app.voice.syncRoster(app.net.getPeersSorted());
   };
 
   // TURN relay configuration (persisted per browser)
@@ -946,23 +1109,23 @@ window.addEventListener('DOMContentLoaded', () => {
         pass: inputTurnPass.value,
       }),
     );
-    if (app.voice.active) showToast('TURN 已更新，重新开启语音后生效');
+    if (app.voice.active) showToast('TURN 已更新');
   };
   [inputTurnUrl, inputTurnUser, inputTurnPass].forEach((input) => {
     input.addEventListener('change', saveTurnConfig);
   });
 
-  // Nickname (persisted, shown in room roster / scoreboard / chat)
+  // Nickname
   const saveNickname = (announce: boolean): void => {
     const raw = inputNickname.value.trim().slice(0, 10);
     if (!raw) {
       inputNickname.value = app.net.callsign;
-      if (announce) showToast('昵称不能为空');
+      if (announce) showToast('呼号不能为空');
       return;
     }
     app.net.setCallsign(raw);
     inputNickname.value = app.net.callsign;
-    if (announce) showToast(`昵称已保存：${app.net.callsign}`);
+    if (announce) showToast(`呼号：${app.net.callsign}`);
   };
 
   inputNickname.value = app.net.callsign;
@@ -992,7 +1155,7 @@ window.addEventListener('DOMContentLoaded', () => {
     const url = selectBrokerUrl.value;
     app.net.connect(url);
     brokerPopover.classList.add('hidden');
-    showToast(`正在重连 Broker: ${url}`);
+    showToast('正在重连服务器');
   };
 
   // Mode Tabs Switching
@@ -1014,7 +1177,7 @@ window.addEventListener('DOMContentLoaded', () => {
     if (mode === 'pvp' || mode === 'coop') {
       if (ensureCanEnter()) joinRoomWithVoice(inputRoom.value || '1985', mode);
     } else {
-      if (app.voice.active) app.voice.disable();
+      app.voice.setRoomListening(false);
       closeChat();
       chatLog.innerHTML = '';
     }
@@ -1062,7 +1225,7 @@ window.addEventListener('DOMContentLoaded', () => {
     joinRoomWithVoice(raw, currentSelectedMode === 'coop' ? 'coop' : 'pvp');
     closeChat();
     chatLog.innerHTML = '';
-    showToast(`已进入房间 #${app.net.roomId}`);
+    showToast(`房间 #${app.net.roomId}`);
   };
 
   btnQuickMatch.onclick = () => {
@@ -1075,14 +1238,14 @@ window.addEventListener('DOMContentLoaded', () => {
       joinRoomWithVoice(target.roomId, target.mode);
       closeChat();
       chatLog.innerHTML = '';
-      showToast(`已匹配至活跃房间 #${target.roomId}`);
+      showToast(`已加入 #${target.roomId}`);
     } else {
       const randRoom = Math.floor(1000 + Math.random() * 8999).toString();
       inputRoom.value = randRoom;
       joinRoomWithVoice(randRoom, currentSelectedMode === 'coop' ? 'coop' : 'pvp');
       closeChat();
       chatLog.innerHTML = '';
-      showToast(`已创建公开战区 #${randRoom}`);
+      showToast(`已创建 #${randRoom}`);
     }
   };
 
@@ -1091,6 +1254,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   btnStartOnline.onclick = () => {
     if (!ensureCanEnter()) return;
+    unlockAllRemoteAudio();
     const isPvp = currentSelectedMode === 'pvp';
     app.hostStartOnlineMatch(isPvp ? 'pvp' : 'coop', isPvp ? selectedPvpMap : selectedCampaignStage);
     beginTouchCombat();
@@ -1106,7 +1270,6 @@ window.addEventListener('DOMContentLoaded', () => {
     closeChat();
     chatLog.innerHTML = '';
     app.enterWorkshop();
-    showToast('沙盘工坊已就绪：左键绘制，右键360°旋转，Shift精细点选');
   };
 
   brushButtons.forEach((btn) => {
@@ -1118,14 +1281,20 @@ window.addEventListener('DOMContentLoaded', () => {
     };
   });
 
+  btnWsFine.onclick = () => {
+    const next = !app.workshopFineBrush;
+    app.setWorkshopFineBrush(next);
+    btnWsFine.classList.toggle('active', next);
+  };
+
   btnWsTemplate.onclick = () => {
     app.resetWorkshopGrid(false);
-    showToast('已载入经典防线模板');
+    showToast('已载入经典布局');
   };
 
   btnWsClear.onclick = () => {
     app.resetWorkshopGrid(true);
-    showToast('战场已清空');
+    showToast('已清空战场');
   };
 
   btnWsPlay.onclick = () => {
@@ -1134,7 +1303,7 @@ window.addEventListener('DOMContentLoaded', () => {
     beginTouchCombat();
   };
 
-  // Tactical Controls (Home / Camera / Slowmo / Audio)
+  // Tactical Controls
   btnHome.onclick = () => {
     heroOverlay.classList.remove('hidden');
     workshopBar.classList.add('hidden');
@@ -1142,25 +1311,30 @@ window.addEventListener('DOMContentLoaded', () => {
     hudTop.classList.add('hidden');
     mobileControls.classList.add('hidden');
     document.body.classList.remove('mobile-combat');
+    prevHudMode = '';
+    prevTouchCombat = null;
     resetTouchUi();
     closeSettings();
     exitLandscape();
     closeChat();
     chatLog.innerHTML = '';
+    if (currentSelectedMode !== 'pvp' && currentSelectedMode !== 'coop') {
+      app.voice.setRoomListening(false);
+    }
     app.startHeroDemo();
   };
 
   btnCamera.onclick = () => {
     const nextPreset = app.cycleCameraPreset();
+    prevCamPreset = nextPreset;
     btnCamera.textContent =
       nextPreset === 'diorama' ? '沙盘视角' : nextPreset === 'chase' ? '追尾视角' : '自由环视';
-    showToast(`视角切换: ${btnCamera.textContent}`);
   };
 
   btnSlowmo.onclick = () => {
     const on = app.toggleSlowMo();
+    prevSlowMo = on;
     btnSlowmo.classList.toggle('active', on);
-    showToast(on ? '子弹时间已开启' : '子弹时间已关闭');
   };
 
   btnAudio.textContent = app.audio.enabled ? '音效开' : '音效关';
@@ -1171,7 +1345,6 @@ window.addEventListener('DOMContentLoaded', () => {
     if (next) app.audio.playUiToggle();
     btnAudio.classList.toggle('active', next);
     btnAudio.textContent = next ? '音效开' : '音效关';
-    showToast(next ? '音效已开启' : '音效已静音');
   };
 
   // Settings: keyboard turret turn speed
@@ -1181,11 +1354,11 @@ window.addEventListener('DOMContentLoaded', () => {
     app.turretKeyTurnSpeed = Math.min(6, Math.max(1, savedTurretSpeed));
   }
   rangeTurretSpeed.value = app.turretKeyTurnSpeed.toFixed(1);
-  turretSpeedValue.textContent = app.turretKeyTurnSpeed.toFixed(1);
+  turretSpeedValue.textContent = `${app.turretKeyTurnSpeed.toFixed(1)} rad/s`;
   rangeTurretSpeed.addEventListener('input', () => {
     const speed = Math.min(6, Math.max(1, parseFloat(rangeTurretSpeed.value)));
     app.turretKeyTurnSpeed = speed;
-    turretSpeedValue.textContent = speed.toFixed(1);
+    turretSpeedValue.textContent = `${speed.toFixed(1)} rad/s`;
     localStorage.setItem(TURRET_SPEED_KEY, String(speed));
   });
 
@@ -1248,11 +1421,16 @@ window.addEventListener('DOMContentLoaded', () => {
     hudTop.classList.add('hidden');
     mobileControls.classList.add('hidden');
     document.body.classList.remove('mobile-combat');
+    prevHudMode = '';
+    prevTouchCombat = null;
     resetTouchUi();
     closeSettings();
     exitLandscape();
     closeChat();
     chatLog.innerHTML = '';
+    if (currentSelectedMode !== 'pvp' && currentSelectedMode !== 'coop') {
+      app.voice.setRoomListening(false);
+    }
     app.startHeroDemo();
   };
 });

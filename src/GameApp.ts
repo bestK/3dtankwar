@@ -21,6 +21,7 @@ import {
   PeerPresence,
   PowerUpKind,
   PublicRoomBeacon,
+  QualityTier,
   SQUAD_COLORS,
   TileType,
 } from './types';
@@ -109,6 +110,60 @@ const ENEMY_TOP_SPAWNS: Array<[number, number]> = [
   [12.0, -12.0],
 ];
 
+interface StageAtmosphere {
+  bg: number;
+  fog: number;
+  hemiSky: number;
+  hemiGround: number;
+  keyColor: number;
+  keyIntensity: number;
+  rimColor: number;
+  rimIntensity: number;
+}
+
+const ATMOSPHERES: Record<string, StageAtmosphere> = {
+  classic: {
+    bg: 0x0a0e15,
+    fog: 0x0a0e15,
+    hemiSky: 0x6d92bd,
+    hemiGround: 0x261d17,
+    keyColor: 0xffe4bd,
+    keyIntensity: 2.55,
+    rimColor: 0x5c9eff,
+    rimIntensity: 1.15,
+  },
+  canal: {
+    bg: 0x091119,
+    fog: 0x091119,
+    hemiSky: 0x63a6c8,
+    hemiGround: 0x1a2228,
+    keyColor: 0xffdfb5,
+    keyIntensity: 2.5,
+    rimColor: 0x42c2e8,
+    rimIntensity: 1.25,
+  },
+  glacial: {
+    bg: 0x0a111b,
+    fog: 0x0b1320,
+    hemiSky: 0x8cc2eb,
+    hemiGround: 0x1d2633,
+    keyColor: 0xeef5ff,
+    keyIntensity: 2.45,
+    rimColor: 0x72beff,
+    rimIntensity: 1.35,
+  },
+  forest: {
+    bg: 0x0a1012,
+    fog: 0x0a1012,
+    hemiSky: 0x749e7e,
+    hemiGround: 0x241d15,
+    keyColor: 0xffd99e,
+    keyIntensity: 2.6,
+    rimColor: 0x5ca89a,
+    rimIntensity: 1.1,
+  },
+};
+
 export class GameApp {
   public readonly renderer: THREE.WebGLRenderer;
   public readonly scene: THREE.Scene;
@@ -125,14 +180,21 @@ export class GameApp {
   public stageIndex = 0;
   public pvpMapIndex = 0;
   public workshopBrush: TileType = TileType.BRICK;
+  public workshopFineBrush = false;
   public slowMo = false;
-  public turretKeyTurnSpeed = 2.6; // rad/s for keyboard turret aiming
+  public qualityTier: QualityTier = 'high';
+  public turretKeyTurnSpeed = 2.6;
   public playerMod = 'default';
   public matchEnded = false;
+
+  private hemiLight!: THREE.HemisphereLight;
+  private keyLight!: THREE.DirectionalLight;
+  private rimLight!: THREE.DirectionalLight;
 
   private customWorkshopGrid: Uint8Array | null = null;
   private localPlayer: Tank | null = null;
   private remotePlayers = new Map<string, Tank>();
+  private speakingPeers = new Set<string>();
   private aiTanks: Tank[] = [];
   private projectiles: ProjectileData[] = [];
   private powerUps: PowerUpItem[] = [];
@@ -179,39 +241,50 @@ export class GameApp {
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.5);
   private floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
+  // Reusable scratch objects to prevent per-frame GC allocations
+  private tmpCamDir = new THREE.Vector3();
+  private tmpHitPoint = new THREE.Vector3();
+  private tmpMuzzle = new THREE.Vector3();
+  private tmpPlayerFocus = new THREE.Vector3();
+  private scratchAllTanks: Tank[] = [];
+
   private clock = new THREE.Clock();
   private elapsed = 0;
   private netSyncAccum = 0;
+  private wasLocalMoving = false;
   private aiSyncAccum = 0;
+  private aiSyncSeq = 0;
   private shockPulse = 0;
 
   constructor(private container: HTMLElement, private ui: GameUiBridge) {
     const w = window.innerWidth;
     const h = window.innerHeight;
+    const isCoarse = window.matchMedia('(pointer: coarse)').matches;
 
     this.renderer = new THREE.WebGLRenderer({
       antialias: false,
       powerPreference: 'high-performance',
     });
-    const pixelRatioCap = window.matchMedia('(pointer: coarse)').matches ? 1.5 : 2;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, pixelRatioCap));
+    this.qualityTier = isCoarse ? 'medium' : 'high';
+    const dprCap = isCoarse ? 1.35 : 1.75;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, dprCap));
     this.renderer.setSize(w, h);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.06;
+    this.renderer.toneMappingExposure = 1.08;
     this.container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0b0f16);
-    this.scene.fog = new THREE.FogExp2(0x0b0f16, 0.0115);
+    this.scene.background = new THREE.Color(0x0a0e15);
+    this.scene.fog = new THREE.FogExp2(0x0a0e15, 0.011);
 
     this.textures = createProceduralTextures(this.renderer);
     this.scene.environment = this.textures.envMap;
-    this.scene.environmentIntensity = 0.78;
+    this.scene.environmentIntensity = 0.82;
 
     this.cameraRig = new CameraRig(w / h);
-    this.setupLighting();
+    this.setupLighting(isCoarse ? 1024 : 2048);
 
     this.world = new DioramaWorld(this.textures);
     this.scene.add(this.world.group);
@@ -223,6 +296,7 @@ export class GameApp {
     this.scene.add(this.sight.group);
 
     this.post = new PostPipeline(this.renderer, this.scene, this.cameraRig.camera, w, h);
+    this.post.setQuality(this.qualityTier);
 
     this.net = new MqttMultiplayer({
       onConnectionChange: (st, url, ping) => {
@@ -230,12 +304,14 @@ export class GameApp {
         if (st === 'online') this.voice?.refresh();
       },
       onRosterChange: (peers, hostId) => {
+        this.voice?.syncRoster(peers);
         this.syncRemoteRoster(peers);
         this.ui.onRosterUpdate(peers, hostId);
       },
       onPublicRoomsChange: (rooms) => this.ui.onPublicRooms(rooms),
       onRemoteState: (peerId, snap) => this.handleRemoteTankState(peerId, snap),
       onRoomEvent: (evt, senderId) => this.handleRoomEvent(evt, senderId),
+      onVoiceChunk: (senderId, b64, sr) => this.voice?.handleFallbackChunk(senderId, b64, sr),
       onPeerJoinedLate: () => {
         if ((this.mode === 'pvp' || this.mode === 'coop') && this.net.isHost()) {
           this.net.publishEvent(
@@ -252,36 +328,93 @@ export class GameApp {
       },
     });
 
-    this.voice = new VoiceChat(this.net.peerId, (evt) =>
-      this.net.publishEvent(evt, evt.action === 'signal'),
+    this.voice = new VoiceChat(
+      this.net.peerId,
+      (evt, reliable) => this.net.publishEvent(evt, reliable ?? evt.action === 'signal'),
+      (b64, sr) => this.net.publishVoiceChunk(b64, sr),
     );
+    this.voice.onActiveChange = (active) => {
+      this.net.setVoiceActive(active);
+    };
 
     this.bindInputs();
     this.startHeroDemo();
     this.animate();
   }
 
-  private setupLighting(): void {
-    const hemi = new THREE.HemisphereLight(0x6d90ba, 0x261d17, 0.85);
-    this.scene.add(hemi);
+  private setupLighting(shadowRes: number): void {
+    this.hemiLight = new THREE.HemisphereLight(0x6d92bd, 0x261d17, 0.86);
+    this.scene.add(this.hemiLight);
 
-    const keyLight = new THREE.DirectionalLight(0xffe6c2, 2.55);
-    keyLight.position.set(16, 26, 14);
-    keyLight.castShadow = true;
-    keyLight.shadow.mapSize.set(2048, 2048);
-    keyLight.shadow.camera.near = 4;
-    keyLight.shadow.camera.far = 68;
+    this.keyLight = new THREE.DirectionalLight(0xffe4bd, 2.55);
+    this.keyLight.position.set(16, 26, 14);
+    this.keyLight.castShadow = true;
+    this.keyLight.shadow.mapSize.set(shadowRes, shadowRes);
+    this.keyLight.shadow.camera.near = 4;
+    this.keyLight.shadow.camera.far = 68;
     const d = 18.5;
-    keyLight.shadow.camera.left = -d;
-    keyLight.shadow.camera.right = d;
-    keyLight.shadow.camera.top = d;
-    keyLight.shadow.camera.bottom = -d;
-    keyLight.shadow.bias = -0.0005;
-    this.scene.add(keyLight);
+    this.keyLight.shadow.camera.left = -d;
+    this.keyLight.shadow.camera.right = d;
+    this.keyLight.shadow.camera.top = d;
+    this.keyLight.shadow.camera.bottom = -d;
+    this.keyLight.shadow.bias = -0.0005;
+    this.scene.add(this.keyLight);
 
-    const rimLight = new THREE.DirectionalLight(0x63a4ff, 1.15);
-    rimLight.position.set(-19, 15, -16);
-    this.scene.add(rimLight);
+    this.rimLight = new THREE.DirectionalLight(0x5c9eff, 1.15);
+    this.rimLight.position.set(-19, 15, -16);
+    this.scene.add(this.rimLight);
+  }
+
+  private applyAtmosphere(key: keyof typeof ATMOSPHERES): void {
+    const atm = ATMOSPHERES[key] || ATMOSPHERES.classic;
+    (this.scene.background as THREE.Color).setHex(atm.bg);
+    if (this.scene.fog instanceof THREE.FogExp2) {
+      this.scene.fog.color.setHex(atm.fog);
+    }
+    this.hemiLight.color.setHex(atm.hemiSky);
+    this.hemiLight.groundColor.setHex(atm.hemiGround);
+    this.keyLight.color.setHex(atm.keyColor);
+    this.keyLight.intensity = atm.keyIntensity;
+    this.rimLight.color.setHex(atm.rimColor);
+    this.rimLight.intensity = atm.rimIntensity;
+  }
+
+  public setQualityTier(tier: QualityTier): void {
+    this.qualityTier = tier;
+    const dprCap = tier === 'high' ? 1.75 : tier === 'medium' ? 1.35 : 1.0;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, dprCap));
+
+    const wantShadow = tier !== 'low';
+    const shadowSize = tier === 'high' ? 2048 : 1024;
+    this.renderer.shadowMap.enabled = wantShadow;
+    this.keyLight.castShadow = wantShadow;
+    if (wantShadow && this.keyLight.shadow.mapSize.x !== shadowSize) {
+      this.keyLight.shadow.mapSize.set(shadowSize, shadowSize);
+      this.keyLight.shadow.map?.dispose();
+      this.keyLight.shadow.map = null;
+    }
+
+    this.post.setQuality(tier);
+    this.viewportW = 0;
+    this.viewportH = 0;
+    this.applyViewportSize();
+  }
+
+  public setSpeakingPeer(peerId: string, speaking: boolean): void {
+    if (speaking) this.speakingPeers.add(peerId);
+    else this.speakingPeers.delete(peerId);
+
+    if (this.localPlayer && this.localPlayer.id === peerId) {
+      this.localPlayer.isSpeaking = speaking;
+    }
+    const rt = this.remotePlayers.get(peerId);
+    if (rt) rt.isSpeaking = speaking;
+  }
+
+  public setWorkshopFineBrush(fine: boolean): void {
+    this.workshopFineBrush = fine;
+    this.world.setBrushFine(fine);
+    if (this.mode === 'workshop') this.updateWorkshopCursor();
   }
 
   private applyViewportSize = (): void => {
@@ -303,8 +436,6 @@ export class GameApp {
         this.applyViewportSize();
       });
     }
-    // Mobile browsers report stale dimensions during orientation changes;
-    // re-apply once the layout has settled.
     for (const timer of this.viewportTimers) window.clearTimeout(timer);
     this.viewportTimers = [120, 450].map((delay) =>
       window.setTimeout(() => this.applyViewportSize(), delay),
@@ -333,9 +464,11 @@ export class GameApp {
 
     window.addEventListener('keydown', (e) => {
       if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
+      this.audio.unlock();
+      this.voice.unlockAudio();
       this.keys.add(e.code);
 
-      // Cheat code: type "woshinidie" (我是你爹) during combat
+      // Cheat code: type "woshinidie" during combat
       const typedLetter = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : '';
       if (
         typedLetter &&
@@ -354,7 +487,7 @@ export class GameApp {
 
       if (e.code === 'Tab') {
         e.preventDefault();
-        this.toggleSlowMo();
+        if (this.mode === 'campaign') this.toggleSlowMo();
       } else if (e.code === 'KeyC') {
         this.cycleCameraPreset();
       } else if (e.code === 'Space' && this.isCombatMode()) {
@@ -397,13 +530,13 @@ export class GameApp {
       if (this.mode === 'workshop') {
         this.mouseNdc.x = (e.clientX / window.innerWidth) * 2 - 1;
         this.mouseNdc.y = -(e.clientY / window.innerHeight) * 2 + 1;
-        this.updateWorkshopCursor();
+        this.world.setBrushFine(this.workshopFineBrush || e.shiftKey);
+        this.updateWorkshopCursor(this.workshopFineBrush || e.shiftKey);
         if (this.isPaintingWorkshop) {
-          this.paintAtWorkshopCursor(e.shiftKey);
+          this.paintAtWorkshopCursor(this.workshopFineBrush || e.shiftKey);
         }
         return;
       }
-      // Touch drags orbit the camera; aiming is handled by the right stick.
       if (e.pointerType === 'touch') return;
 
       this.mouseNdc.x = (e.clientX / window.innerWidth) * 2 - 1;
@@ -417,14 +550,17 @@ export class GameApp {
 
     this.renderer.domElement.addEventListener('pointerdown', (e) => {
       this.audio.unlock();
+      this.voice.unlockAudio();
       this.mouseNdc.x = (e.clientX / window.innerWidth) * 2 - 1;
       this.mouseNdc.y = -(e.clientY / window.innerHeight) * 2 + 1;
 
       if (e.button === 0 && !e.altKey) {
         if (this.mode === 'workshop') {
           this.isPaintingWorkshop = true;
-          this.updateWorkshopCursor();
-          this.paintAtWorkshopCursor(e.shiftKey);
+          const fine = this.workshopFineBrush || e.shiftKey;
+          this.world.setBrushFine(fine);
+          this.updateWorkshopCursor(fine);
+          this.paintAtWorkshopCursor(fine);
         } else if (e.pointerType !== 'touch' && this.isCombatMode() && this.cameraRig.preset !== 'orbit') {
           this.aimMode = 'mouse';
           this.hasMouseMoved = true;
@@ -452,13 +588,11 @@ export class GameApp {
     return this.mode === 'campaign' || this.mode === 'pvp' || this.mode === 'coop';
   }
 
-  /** Left stick: x = strafe, y = forward (both -1..1). */
   public setTouchMove(x: number, y: number): void {
     this.touchMoveX = Math.max(-1, Math.min(1, x));
     this.touchMoveY = Math.max(-1, Math.min(1, y));
   }
 
-  /** Right stick: aim direction in camera space (x = right, y = forward). */
   public setTouchAim(x: number, y: number): void {
     this.touchAimX = Math.max(-1, Math.min(1, x));
     this.touchAimY = Math.max(-1, Math.min(1, y));
@@ -560,7 +694,7 @@ export class GameApp {
       },
       true,
     );
-    this.ui.onToast(`已发起投票踢出 ${vote.targetName}`);
+    this.ui.onToast(`发起投票：${vote.targetName}`);
     this.beginVoteTimer(vote);
     this.evaluateVote(vote);
     return true;
@@ -616,7 +750,7 @@ export class GameApp {
       };
       this.activeVote = vote;
       if (targetId === this.net.peerId) {
-        this.ui.onToast('有人发起了对你的投票踢出');
+        this.ui.onToast('投票进行中');
       }
       this.beginVoteTimer(vote);
       this.emitVoteUi(vote);
@@ -644,7 +778,6 @@ export class GameApp {
 
       const banUntil = Date.now() + 10 * 60 * 1000;
       if (vote.resolved) {
-        // A passed result wins a race against a local timeout.
         if (evt.passed && !vote.passed) {
           vote.passed = true;
           this.executeVoteKick(vote.targetId, vote.targetName, vote.targetFp, banUntil);
@@ -661,7 +794,7 @@ export class GameApp {
       if (vote.passed) {
         this.executeVoteKick(vote.targetId, vote.targetName, vote.targetFp, banUntil);
       } else {
-        this.ui.onToast(`投票未通过：${vote.targetName} 未被移出`);
+        this.ui.onToast(`投票未通过：${vote.targetName}`);
       }
     }
   }
@@ -720,7 +853,7 @@ export class GameApp {
     if (passed) {
       this.executeVoteKick(vote.targetId, vote.targetName, vote.targetFp, banUntil);
     } else {
-      this.ui.onToast(`投票未通过：${vote.targetName} 未被移出`);
+      this.ui.onToast(`投票未通过：${vote.targetName}`);
     }
   }
 
@@ -736,15 +869,15 @@ export class GameApp {
     }
 
     if (targetId === this.net.peerId) {
-      this.voice.disable();
+      this.voice.setRoomListening(false);
       this.net.leaveRoom();
-      this.ui.onKicked('你已被投票移出房间，10 分钟内无法进入', banUntil);
+      this.ui.onKicked('已被投票移出房间（冷却 10 分钟）', banUntil);
       return;
     }
 
     this.voice.dropPeer(targetId);
     this.net.blockPeer(targetId);
-    this.ui.onToast(`${targetName} 已被投票移出`);
+    this.ui.onToast(`${targetName} 已被移出`);
   }
 
   private emitVoteUi(vote: ActiveVoteState | null): void {
@@ -778,7 +911,6 @@ export class GameApp {
       .trim()
       .slice(0, 120);
     if (!text) return;
-    // Hidden cheat: typing the code in chat arms the cheat without broadcasting it.
     if (text.toLowerCase() === 'woshinidie') {
       if (this.isCombatMode() && !this.matchEnded) this.activateCheat();
       return;
@@ -803,6 +935,10 @@ export class GameApp {
   }
 
   public toggleSlowMo(): boolean {
+    if (this.mode === 'pvp' || this.mode === 'coop') {
+      this.slowMo = false;
+      return false;
+    }
     this.slowMo = !this.slowMo;
     return this.slowMo;
   }
@@ -810,18 +946,28 @@ export class GameApp {
   private clearEntities(): void {
     if (this.localPlayer) {
       this.scene.remove(this.localPlayer.root);
+      this.localPlayer.dispose();
       this.localPlayer = null;
     }
-    for (const t of this.remotePlayers.values()) this.scene.remove(t.root);
+    for (const t of this.remotePlayers.values()) {
+      this.scene.remove(t.root);
+      t.dispose();
+    }
     this.remotePlayers.clear();
 
-    for (const t of this.aiTanks) this.scene.remove(t.root);
+    for (const t of this.aiTanks) {
+      this.scene.remove(t.root);
+      t.dispose();
+    }
     this.aiTanks = [];
 
     for (const p of this.projectiles) this.scene.remove(p.mesh);
     this.projectiles = [];
 
-    for (const pu of this.powerUps) this.scene.remove(pu.group);
+    for (const pu of this.powerUps) {
+      this.scene.remove(pu.group);
+      pu.dispose();
+    }
     this.powerUps = [];
 
     this.vfx.clearDecals();
@@ -839,6 +985,7 @@ export class GameApp {
     this.cheatBuffer = '';
     this.cheatActive = false;
     this.cheatCooldown = 0;
+    this.wasLocalMoving = false;
     this.clearVote();
   }
 
@@ -849,10 +996,10 @@ export class GameApp {
     document.body.classList.add('mode-hero');
     document.body.classList.remove('in-combat', 'mode-orbit');
 
+    this.applyAtmosphere('classic');
     this.world.loadGrid(buildCampaignGrid(0), true);
     this.cameraRig.setHeroPresentation();
 
-    // 2 autonomous allied hero tanks + 4 enemy tanks skirmishing
     const hero1 = new Tank({ id: 'demo_h1', team: 'player', color: SQUAD_COLORS[0] }, this.textures);
     hero1.setPosition(-4, 11, Math.PI);
     hero1.aiDirAngle = Math.PI;
@@ -887,6 +1034,9 @@ export class GameApp {
     document.body.classList.remove('mode-hero', 'mode-orbit');
     document.body.classList.add('in-combat');
 
+    const themes: Array<keyof typeof ATMOSPHERES> = ['classic', 'canal', 'glacial', 'forest', 'classic'];
+    this.applyAtmosphere(themes[stageIdx % themes.length]);
+
     const grid = customGrid ? new Uint8Array(customGrid) : buildCampaignGrid(stageIdx);
     this.world.loadGrid(grid, true);
     this.cameraRig.setPreset('diorama');
@@ -904,17 +1054,19 @@ export class GameApp {
     this.buildWaveQueue(16 + stageIdx * 2);
     this.enemySpawnTimer = 0.6;
     this.audio.playStageFanfare();
-    this.ui.onToast(`第 0${stageIdx + 1} 战区 · 守卫鹰徽核心`);
+    this.ui.onToast(`第 0${stageIdx + 1} 战区`);
   }
 
   public enterWorkshop(): void {
     this.clearEntities();
     this.mode = 'workshop';
     document.body.classList.remove('mode-hero', 'in-combat');
+    this.applyAtmosphere('classic');
     if (!this.customWorkshopGrid) {
       this.customWorkshopGrid = buildCampaignGrid(0);
     }
     this.world.loadGrid(this.customWorkshopGrid, true);
+    this.world.setBrushFine(this.workshopFineBrush);
     this.world.brushCursor.visible = true;
     this.cameraRig.setPreset('diorama');
   }
@@ -949,14 +1101,23 @@ export class GameApp {
 
   private beginOnlineSession(mode: 'pvp' | 'coop', mapIndex: number, grid: Uint8Array): void {
     this.clearEntities();
+    this.slowMo = false;
     this.world.brushCursor.visible = false;
     this.mode = mode;
-    if (mode === 'pvp') this.pvpMapIndex = mapIndex;
-    else this.stageIndex = mapIndex;
+    if (mode === 'pvp') {
+      this.pvpMapIndex = mapIndex;
+      const pvpThemes: Array<keyof typeof ATMOSPHERES> = ['classic', 'canal', 'glacial'];
+      this.applyAtmosphere(pvpThemes[mapIndex % pvpThemes.length]);
+    } else {
+      this.stageIndex = mapIndex;
+      const themes: Array<keyof typeof ATMOSPHERES> = ['classic', 'canal', 'glacial', 'forest', 'classic'];
+      this.applyAtmosphere(themes[mapIndex % themes.length]);
+    }
 
     document.body.classList.remove('mode-hero', 'mode-orbit');
     document.body.classList.add('in-combat');
 
+    this.voice.setRoomListening(true);
     this.world.loadGrid(grid, mode === 'coop');
     this.cameraRig.setPreset('diorama');
 
@@ -974,30 +1135,27 @@ export class GameApp {
       },
       this.textures,
     );
+    this.localPlayer.isSpeaking = this.speakingPeers.has(this.net.peerId);
     this.localPlayer.respawn(sx, sz, sAngle, 3.0);
     this.scene.add(this.localPlayer.root);
     this.applyModToTank(this.localPlayer, this.playerMod);
     this.sight.group.visible = true;
     this.net.setLocalStats(0, 0);
 
-    // Spawn current peers
+    // Immediately broadcast spawn snapshot so peers align from frame 0
+    this.net.publishTankState(this.localPlayer.toNetSnapshot(0));
     this.syncRemoteRoster(this.net.getPeersSorted());
 
     if (mode === 'coop') {
       this.buildWaveQueue(20);
       this.enemySpawnTimer = 1.0;
     } else if (this.net.getPeersSorted().length === 1) {
-      // Solo waiting in PvP room: add 2 AI sparring challengers that clear automatically when a human joins!
       this.spawnPvpSparringBots();
     }
 
     this.audio.playStageFanfare();
     this.ui.onOnlineMatchStarted(mode);
-    this.ui.onToast(
-      mode === 'pvp'
-        ? `联机死斗 #${this.net.roomId} · 率先 8 击杀获胜`
-        : `联机守卫 #${this.net.roomId} · 协同防卫基地`,
-    );
+    this.ui.onToast(mode === 'pvp' ? `联机死斗 #${this.net.roomId}` : `联机守卫 #${this.net.roomId}`);
   }
 
   private spawnPvpSparringBots(): void {
@@ -1041,17 +1199,20 @@ export class GameApp {
   private syncRemoteRoster(peers: PeerPresence[]): void {
     if (!this.isCombatMode() || this.mode === 'campaign') return;
 
-    // If a real human joined PvP, remove solo sparring bots!
     if (this.mode === 'pvp' && peers.length >= 2 && this.aiTanks.length > 0) {
-      for (const b of this.aiTanks) this.scene.remove(b.root);
+      for (const b of this.aiTanks) {
+        this.scene.remove(b.root);
+        b.dispose();
+      }
       this.aiTanks = [];
-      this.ui.onToast('真人对手已驶入战场！');
+      this.ui.onToast('真人对手已加入');
     }
 
     const activeIds = new Set(peers.map((p) => p.peerId));
     for (const [id, tank] of this.remotePlayers.entries()) {
       if (!activeIds.has(id)) {
         this.scene.remove(tank.root);
+        tank.dispose();
         this.remotePlayers.delete(id);
       }
     }
@@ -1072,6 +1233,7 @@ export class GameApp {
           },
           this.textures,
         );
+        rt.isSpeaking = this.speakingPeers.has(p.peerId);
         rt.setPosition(sx, sz, sa);
         this.scene.add(rt.root);
         this.remotePlayers.set(p.peerId, rt);
@@ -1149,11 +1311,11 @@ export class GameApp {
           this.vfx.spawnTankExplosion(this.localPlayer.x, this.localPlayer.z, true);
           this.audio.playExplosion(true);
           this.shockPulse = 0.9;
-          this.ui.onToast(`被 ${evt.attackerName} 击毁！`);
+          this.ui.onToast(`被 ${evt.attackerName} 击毁`);
           this.emitKillFeed(`你被 ${evt.attackerName || '玩家'} 击毁`);
           this.handleLocalDeath();
         } else {
-          this.vfx.spawnSparks(evt.x, 0.7, evt.z, 18, 0xffaa44);
+          this.vfx.spawnSparks(evt.x, 0.7, evt.z, 16, 0xffaa44);
         }
       } else if (evt.fatal) {
         const rt = this.remotePlayers.get(evt.targetId);
@@ -1183,6 +1345,7 @@ export class GameApp {
     if (!evt.baseAlive && this.world.baseAlive) {
       this.triggerEagleDestruction();
     }
+    const snapSeq = evt.seq ?? 0;
     const seen = new Set<string>();
     for (const [id, arch, x, z, vx, vz, hull, turret, hp, maxHp] of evt.enemies) {
       seen.add(id);
@@ -1197,7 +1360,7 @@ export class GameApp {
         this.aiTanks.push(ai);
       }
       ai.applyNetState({
-        seq: 0,
+        seq: snapSeq,
         x,
         z,
         vx,
@@ -1217,6 +1380,7 @@ export class GameApp {
     for (let i = this.aiTanks.length - 1; i >= 0; i--) {
       if (!seen.has(this.aiTanks[i].id)) {
         this.scene.remove(this.aiTanks[i].root);
+        this.aiTanks[i].dispose();
         this.aiTanks.splice(i, 1);
       }
     }
@@ -1232,7 +1396,7 @@ export class GameApp {
     p.setCheatGlow(true);
     this.audio.playPowerUp();
     this.cameraRig.addTrauma(0.35);
-    this.ui.onToast('金手指启动：血量 ×100 · 车身红光 · 空格倾泻全屏弹幕');
+    this.ui.onToast('超载模式已激活');
   }
 
   private fireCheatBarrage(): void {
@@ -1245,7 +1409,7 @@ export class GameApp {
     const dmg = 3;
     const color = 0xff3a1e;
     const stamp = Date.now();
-    const muzzle = p.getMuzzleWorldPosition();
+    const muzzle = p.getMuzzleWorldPosition(this.tmpMuzzle);
 
     p.triggerRecoil(true);
     this.vfx.spawnMuzzleBlast(
@@ -1306,7 +1470,7 @@ export class GameApp {
     if (p.fireCooldown > 0 && !heavy) return;
 
     p.fireCooldown = heavy ? p.reloadTime * 1.45 : p.reloadTime;
-    const muzzle = p.getMuzzleWorldPosition();
+    const muzzle = p.getMuzzleWorldPosition(this.tmpMuzzle);
     const pierceSteel = heavy || p.stars >= 3;
     const dmg = heavy ? 3 : p.stars >= 2 ? 2 : 1;
     const speed = heavy ? 25.0 : p.bulletSpeed;
@@ -1384,43 +1548,51 @@ export class GameApp {
       dmg: cfg.dmg,
       heavy: cfg.heavy,
       pierceSteel: cfg.pierceSteel,
-      bouncesLeft: cfg.heavy ? 0 : 0,
+      bouncesLeft: 0,
       alive: true,
       mesh,
       trailTimer: 0,
     });
   }
 
-  private updateWorkshopCursor(): void {
+  private updateWorkshopCursor(fineSingleCell = this.workshopFineBrush): void {
     this.raycaster.setFromCamera(this.mouseNdc, this.cameraRig.camera);
-    const hit = new THREE.Vector3();
-    if (!this.raycaster.ray.intersectPlane(this.floorPlane, hit)) return;
-    const [gx, gz] = this.world.worldToGrid(hit.x, hit.z);
+    if (!this.raycaster.ray.intersectPlane(this.floorPlane, this.tmpHitPoint)) return;
+    const [gx, gz] = this.world.worldToGrid(this.tmpHitPoint.x, this.tmpHitPoint.z);
     if (gx < 0 || gx >= GRID_SIZE || gz < 0 || gz >= GRID_SIZE) {
       this.world.brushCursor.visible = false;
       return;
     }
     this.world.brushCursor.visible = true;
-    const mx = Math.floor(gx / 2) * 2;
-    const mz = Math.floor(gz / 2) * 2;
-    this.world.brushCursor.position.set(
-      -HALF_BOARD + (mx + 1) * 1.0,
-      0.14,
-      -HALF_BOARD + (mz + 1) * 1.0,
-    );
+    if (fineSingleCell) {
+      this.world.brushCursor.position.set(
+        this.world.gridToWorldX(gx),
+        0.14,
+        this.world.gridToWorldZ(gz),
+      );
+    } else {
+      const mx = Math.floor(gx / 2) * 2;
+      const mz = Math.floor(gz / 2) * 2;
+      this.world.brushCursor.position.set(
+        -HALF_BOARD + (mx + 1) * 1.0,
+        0.14,
+        -HALF_BOARD + (mz + 1) * 1.0,
+      );
+    }
   }
 
   private paintAtWorkshopCursor(fineSingleCell: boolean): void {
     this.raycaster.setFromCamera(this.mouseNdc, this.cameraRig.camera);
-    const hit = new THREE.Vector3();
-    if (!this.raycaster.ray.intersectPlane(this.floorPlane, hit)) return;
-    const [gx, gz] = this.world.worldToGrid(hit.x, hit.z);
+    if (!this.raycaster.ray.intersectPlane(this.floorPlane, this.tmpHitPoint)) return;
+    const [gx, gz] = this.world.worldToGrid(this.tmpHitPoint.x, this.tmpHitPoint.z);
     if (gx < 0 || gx >= GRID_SIZE || gz < 0 || gz >= GRID_SIZE) return;
 
+    const hx = this.tmpHitPoint.x;
+    const hz = this.tmpHitPoint.z;
     const applyCell = (cx: number, cz: number) => {
-      if ((cx === 12 || cx === 13) && (cz === 24 || cz === 25)) return; // Protect Eagle core
+      if ((cx === 12 || cx === 13) && (cz === 24 || cz === 25)) return;
       const popped = this.world.setCell(cx, cz, this.workshopBrush);
-      if (popped.length > 0) this.vfx.spawnBrickBurst(popped, hit.x, hit.z);
+      if (popped.length > 0) this.vfx.spawnBrickBurst(popped, hx, hz);
     };
 
     if (fineSingleCell) {
@@ -1435,11 +1607,11 @@ export class GameApp {
   }
 
   private getAllTanks(): Tank[] {
-    const list: Tank[] = [];
-    if (this.localPlayer) list.push(this.localPlayer);
-    for (const r of this.remotePlayers.values()) list.push(r);
-    for (const a of this.aiTanks) list.push(a);
-    return list;
+    this.scratchAllTanks.length = 0;
+    if (this.localPlayer) this.scratchAllTanks.push(this.localPlayer);
+    for (const r of this.remotePlayers.values()) this.scratchAllTanks.push(r);
+    for (const a of this.aiTanks) this.scratchAllTanks.push(a);
+    return this.scratchAllTanks;
   }
 
   private updateLocalPlayer(dt: number): void {
@@ -1468,14 +1640,11 @@ export class GameApp {
       moveZ /= moveLen;
     }
 
-    // Rotate WASD input relative to current camera azimuth so controls ALWAYS feel intuitive even after 360° camera orbit!
     let worldMoveX = moveX;
     let worldMoveZ = moveZ;
     if (moveX !== 0 || moveZ !== 0) {
-      const camDir = new THREE.Vector3();
-      this.cameraRig.camera.getWorldDirection(camDir);
-      const camYaw = Math.atan2(camDir.x, camDir.z);
-      // Forward (moveZ = -1) moves along camera horizontal forward
+      this.cameraRig.camera.getWorldDirection(this.tmpCamDir);
+      const camYaw = Math.atan2(this.tmpCamDir.x, this.tmpCamDir.z);
       const fwdX = Math.sin(camYaw);
       const fwdZ = Math.cos(camYaw);
       const rightX = -fwdZ;
@@ -1487,9 +1656,8 @@ export class GameApp {
     let aimAngle: number | null = null;
     if (this.aimMode === 'touch') {
       if (this.touchAimActive) {
-        const camDir = new THREE.Vector3();
-        this.cameraRig.camera.getWorldDirection(camDir);
-        const camYaw = Math.atan2(camDir.x, camDir.z);
+        this.cameraRig.camera.getWorldDirection(this.tmpCamDir);
+        const camYaw = Math.atan2(this.tmpCamDir.x, this.tmpCamDir.z);
         const fwdX = Math.sin(camYaw);
         const fwdZ = Math.cos(camYaw);
         const dirX = this.touchAimY * fwdX - this.touchAimX * fwdZ;
@@ -1498,7 +1666,6 @@ export class GameApp {
       }
       aimAngle = this.touchAimAngle;
     } else if (this.aimMode === 'keyboard') {
-      // Left = counter-clockwise on screen, right = clockwise (matches the top-down camera)
       const aimDir =
         (this.keys.has('ArrowLeft') || this.keys.has('KeyQ') ? 1 : 0) -
         (this.keys.has('ArrowRight') || this.keys.has('KeyE') ? 1 : 0);
@@ -1535,11 +1702,10 @@ export class GameApp {
   private updateAiDirector(dt: number): void {
     const isCoopClient = this.mode === 'coop' && !this.net.isHost();
     if (isCoopClient) {
-      for (const ai of this.aiTanks) ai.updateRemote(dt, this.vfx);
+      for (const ai of this.aiTanks) ai.updateRemote(dt, this.world, this.vfx);
       return;
     }
 
-    // Spawn Campaign / Co-op wave enemies
     if ((this.mode === 'campaign' || this.mode === 'coop') && !this.matchEnded) {
       const maxActive = this.mode === 'coop' ? 5 : 4;
       this.enemySpawnTimer -= dt;
@@ -1567,7 +1733,6 @@ export class GameApp {
       }
     }
 
-    // Periodic central PowerUp crate in PvP
     if (this.mode === 'pvp' && this.net.isHost() && !this.matchEnded) {
       this.pvpPowerUpTimer -= dt;
       if (this.pvpPowerUpTimer <= 0 && this.powerUps.length < 2) {
@@ -1585,7 +1750,6 @@ export class GameApp {
 
     for (const ai of this.aiTanks) {
       if (!ai.alive) {
-        // In Demo or PvP Sparring, auto-respawn fallen AI tanks!
         if (this.mode === 'demo' || this.mode === 'pvp') {
           ai.aiTurnTimer -= dt;
           if (ai.aiTurnTimer <= -2.2) {
@@ -1604,7 +1768,6 @@ export class GameApp {
       const prevX = ai.x;
       const prevZ = ai.z;
 
-      // Pick target (nearest opposing tank or Eagle Base)
       let targetX = 0;
       let targetZ = 12.0;
       let bestDist = 999;
@@ -1660,7 +1823,7 @@ export class GameApp {
       if (ai.aiShootTimer <= 0 && ai.fireCooldown <= 0) {
         ai.aiShootTimer = ai.reloadTime + Math.random() * 0.55;
         ai.fireCooldown = ai.reloadTime;
-        const muzzle = ai.getMuzzleWorldPosition();
+        const muzzle = ai.getMuzzleWorldPosition(this.tmpMuzzle);
         ai.triggerRecoil(false);
         const dx = Math.sin(ai.turretAngle);
         const dz = Math.cos(ai.turretAngle);
@@ -1704,7 +1867,6 @@ export class GameApp {
   }
 
   private updateProjectiles(dt: number): void {
-    // 1. Mid-air Shell-vs-Shell Interception (classic Battle City!)
     for (let i = 0; i < this.projectiles.length; i++) {
       const a = this.projectiles[i];
       if (!a.alive) continue;
@@ -1716,7 +1878,7 @@ export class GameApp {
         if (dx * dx + dz * dz < 0.24 * 0.24) {
           if (!a.heavy) a.alive = false;
           if (!b.heavy) b.alive = false;
-          this.vfx.spawnSparks((a.x + b.x) * 0.5, 0.74, (a.z + b.z) * 0.5, 16, 0xffe082);
+          this.vfx.spawnSparks((a.x + b.x) * 0.5, 0.74, (a.z + b.z) * 0.5, 14, 0xffe082);
           this.vfx.emitFlash((a.x + b.x) * 0.5, 0.9, (a.z + b.z) * 0.5, 0xffbe55, 3.0, 0.12);
         }
       }
@@ -1740,27 +1902,25 @@ export class GameApp {
       p.mesh.position.set(p.x, p.y, p.z);
 
       p.trailTimer += dt;
-      if (p.trailTimer > (p.heavy ? 0.025 : 0.045)) {
+      if (p.trailTimer > (p.heavy ? 0.03 : 0.055)) {
         p.trailTimer = 0;
-        this.vfx.spawnSmokePuff(p.x, p.y, p.z, p.heavy ? 0.14 : 0.08, 0.26, 0.26, p.heavy);
+        this.vfx.spawnSmokePuff(p.x, p.y, p.z, p.heavy ? 0.14 : 0.08, 0.25, 0.24, p.heavy);
       }
 
-      // Check outer table boundary
       if (Math.abs(p.x) >= HALF_BOARD || Math.abs(p.z) >= HALF_BOARD) {
-        this.vfx.spawnSparks(p.x, p.y, p.z, 12, 0x9ec6ff);
+        this.vfx.spawnSparks(p.x, p.y, p.z, 10, 0x9ec6ff);
         if (this.mode !== 'demo') this.audio.playSteelRicochet();
         p.alive = false;
         continue;
       }
 
-      // Check Grid Terrain Hit
       const [gx, gz] = this.world.worldToGrid(p.x, p.z);
       const tile = this.world.getTile(gx, gz);
 
       if (tile === TileType.BASE && this.world.baseAlive) {
         p.alive = false;
         if (this.mode === 'demo') {
-          this.vfx.spawnSparks(p.x, 0.8, p.z, 20, 0xffcc55);
+          this.vfx.spawnSparks(p.x, 0.8, p.z, 16, 0xffcc55);
         } else if (isLocalAuthorityForMap) {
           this.triggerEagleDestruction();
         }
@@ -1769,14 +1929,13 @@ export class GameApp {
 
       if (tile === TileType.BRICK || tile === TileType.STEEL) {
         if (tile === TileType.STEEL && !p.pierceSteel) {
-          this.vfx.spawnSparks(p.x, p.y, p.z, 20, 0xb8dcff);
+          this.vfx.spawnSparks(p.x, p.y, p.z, 16, 0xb8dcff);
           this.vfx.emitFlash(p.x, 0.9, p.z, 0x88c8ff, 2.2, 0.1);
           if (this.mode !== 'demo') this.audio.playSteelRicochet();
           p.alive = false;
           continue;
         }
 
-        // Destroy perpendicular 2-cell slice (authentic Battle City masonry splash!)
         const perpX = Math.abs(p.vz) >= Math.abs(p.vx);
         const targets: Array<[number, number]> = [[gx, gz]];
         if (perpX) {
@@ -1799,7 +1958,7 @@ export class GameApp {
             this.vfx.spawnBrickBurst(popped, p.x, p.z);
             if (this.mode !== 'demo') this.audio.playBrickBreak();
           } else {
-            this.vfx.spawnSparks(p.x, p.y, p.z, 24, 0xffaa44);
+            this.vfx.spawnSparks(p.x, p.y, p.z, 20, 0xffaa44);
             this.audio.playExplosion(false);
           }
           if ((this.mode === 'pvp' || this.mode === 'coop') && changed.length > 0) {
@@ -1815,11 +1974,10 @@ export class GameApp {
           p.alive = false;
           continue;
         } else {
-          p.heavy = false; // Heavy shell punches through 1 wall layer then becomes normal!
+          p.heavy = false;
         }
       }
 
-      // Tank Collision Check
       this.checkProjectileTankHits(p);
     }
   }
@@ -1828,7 +1986,6 @@ export class GameApp {
     const allTanks = this.getAllTanks();
     for (const target of allTanks) {
       if (!target.alive || target.id === p.ownerId) continue;
-      // Friendly fire off in Co-op / Demo
       if (this.mode !== 'pvp' && target.team === p.team) continue;
 
       const dx = p.x - target.x;
@@ -1839,13 +1996,12 @@ export class GameApp {
       p.alive = false;
 
       if (target.shieldTimer > 0) {
-        this.vfx.spawnSparks(p.x, 0.8, p.z, 18, 0x55d8ff);
+        this.vfx.spawnSparks(p.x, 0.8, p.z, 16, 0x55d8ff);
         this.vfx.spawnShockwave(target.x, 0.5, target.z, 1.5, 0x4cd4ff);
         if (this.mode !== 'demo') this.audio.playSteelRicochet();
         return;
       }
 
-      // Remote human player hit in PvP (owned by local shooter!)
       if (this.mode === 'pvp' && target.isRemote) {
         if (p.ownerId === this.net.peerId && this.localPlayer) {
           const fatal = target.hp - p.dmg <= 0;
@@ -1860,11 +2016,11 @@ export class GameApp {
             this.audio.playExplosion(true);
             this.cameraRig.addTrauma(0.65);
             this.shockPulse = 0.7;
-            this.ui.onToast(`击毁 ${target.name}！`);
+            this.ui.onToast(`击毁 ${target.name}`);
             this.emitKillFeed(`你击毁 ${target.name}`);
             this.checkPvpWinCondition();
           } else {
-            this.vfx.spawnSparks(p.x, 0.75, p.z, 18, 0xffb84a);
+            this.vfx.spawnSparks(p.x, 0.75, p.z, 16, 0xffb84a);
           }
           this.net.publishEvent(
             {
@@ -1883,9 +2039,8 @@ export class GameApp {
         return;
       }
 
-      // Local player hit (in Campaign / Co-op / Sparring)
       if (target === this.localPlayer) {
-        if (this.mode === 'pvp' && !p.ownerId.startsWith('spar_bot')) return; // Handled via NetHitEvent
+        if (this.mode === 'pvp' && !p.ownerId.startsWith('spar_bot')) return;
         const died = target.takeDamage(p.dmg);
         this.cameraRig.addTrauma(died ? 0.8 : 0.35);
         if (died) {
@@ -1894,12 +2049,11 @@ export class GameApp {
           this.shockPulse = 0.85;
           this.handleLocalDeath();
         } else {
-          this.vfx.spawnSparks(p.x, 0.75, p.z, 16, 0xffaa44);
+          this.vfx.spawnSparks(p.x, 0.75, p.z, 14, 0xffaa44);
         }
         return;
       }
 
-      // AI Tank Hit
       if (!target.isRemote || p.ownerId === this.net.peerId) {
         const died = target.takeDamage(p.dmg);
         if (died) {
@@ -1922,7 +2076,7 @@ export class GameApp {
             this.localPlayer.score += pts;
             this.net.setLocalStats(this.localPlayer.kills, this.localPlayer.score);
             if (this.mode === 'pvp') this.checkPvpWinCondition();
-            else this.emitKillFeed(`你击毁 ${target.name}`);
+            else this.emitKillFeed(`你击毁 ${target.name || '敌坦'}`);
           }
 
           if (target.isBonusCarrier && (this.mode === 'campaign' || (this.mode === 'coop' && this.net.isHost()))) {
@@ -1933,14 +2087,15 @@ export class GameApp {
             const idx = this.aiTanks.indexOf(target);
             if (idx >= 0) {
               this.scene.remove(target.root);
+              target.dispose();
               this.aiTanks.splice(idx, 1);
             }
             this.checkWaveVictory();
           } else {
-            target.aiTurnTimer = 0; // Triggers respawn timer for Demo / Sparring
+            target.aiTurnTimer = 0;
           }
         } else {
-          this.vfx.spawnSparks(p.x, 0.75, p.z, 16, 0xffcf6b);
+          this.vfx.spawnSparks(p.x, 0.75, p.z, 14, 0xffcf6b);
           if (this.mode !== 'demo') this.audio.playSteelRicochet();
         }
       }
@@ -1979,6 +2134,7 @@ export class GameApp {
     const idx = this.powerUps.findIndex((p) => p.id === id);
     if (idx >= 0) {
       this.scene.remove(this.powerUps[idx].group);
+      this.powerUps[idx].dispose();
       this.powerUps.splice(idx, 1);
     }
   }
@@ -1998,6 +2154,7 @@ export class GameApp {
       pu.update(dt, this.elapsed);
       if (!pu.alive) {
         this.scene.remove(pu.group);
+        pu.dispose();
         this.powerUps.splice(i, 1);
         continue;
       }
@@ -2005,6 +2162,7 @@ export class GameApp {
       if (p && p.alive && Math.hypot(p.x - pu.x, p.z - pu.z) < 1.35) {
         this.applyPowerUp(p, pu.kind);
         this.scene.remove(pu.group);
+        pu.dispose();
         this.powerUps.splice(i, 1);
         if (this.mode === 'pvp' || this.mode === 'coop') {
           this.net.publishEvent({ t: 'pu', action: 'pick', id: pu.id, pickerId: p.id });
@@ -2022,28 +2180,29 @@ export class GameApp {
       case 'star':
         p.stars = Math.min(3, p.stars + 1);
         p.refreshWeaponVisuals();
-        this.ui.onToast(p.stars >= 3 ? '★ 终极穿甲双轨炮已解锁' : '★ 主炮火力晋升');
+        this.ui.onToast(p.stars >= 3 ? '★ 穿甲双轨炮' : '★ 主炮晋升');
         break;
       case 'shield':
         p.shieldTimer = 10.0;
-        this.ui.onToast('能量偏折护盾已激活');
+        this.ui.onToast('偏折护盾');
         break;
       case 'freeze':
         this.freezeTimer = 8.0;
-        this.ui.onToast('敌军装甲陷入冰封时停');
+        this.ui.onToast('冰封时停');
         break;
       case 'fortress':
         this.fortressTimer = 18.0;
         stampEagleFortress(this.world.grid, TileType.STEEL);
         this.world.rebuildAllInstances();
-        this.ui.onToast('基地已升起复合钢铁壁垒');
+        this.ui.onToast('钢铁壁垒');
         break;
       case 'bomb':
-        this.ui.onToast('全屏重炮轰炸！');
+        this.ui.onToast('重炮轰炸');
         for (const ai of [...this.aiTanks]) {
           if (ai.alive && ai.team === 'enemy') {
             this.vfx.spawnTankExplosion(ai.x, ai.z, true);
             this.scene.remove(ai.root);
+            ai.dispose();
             const idx = this.aiTanks.indexOf(ai);
             if (idx >= 0) this.aiTanks.splice(idx, 1);
           }
@@ -2055,7 +2214,7 @@ export class GameApp {
       case 'repair':
         p.hp = p.maxHp;
         if (this.mode !== 'pvp') this.playerLives = Math.min(6, this.playerLives + 1);
-        this.ui.onToast('装甲完整度已修复');
+        this.ui.onToast('装甲已修复');
         break;
     }
   }
@@ -2076,7 +2235,6 @@ export class GameApp {
   private respawnLocalTank(): void {
     if (!this.localPlayer) return;
     if (this.mode === 'pvp') {
-      // Pick corner farthest from active enemies
       let bestCorner = PVP_SPAWNS[0];
       let maxMinDist = -1;
       for (const c of PVP_SPAWNS) {
@@ -2101,6 +2259,10 @@ export class GameApp {
     }
     if (this.aimMode === 'keyboard') {
       this.keyboardAimAngle = this.localPlayer.turretAngle;
+    }
+    if (this.mode === 'pvp' || this.mode === 'coop') {
+      this.netSyncAccum = 0;
+      this.net.publishTankState(this.localPlayer.toNetSnapshot(0));
     }
   }
 
@@ -2131,7 +2293,7 @@ export class GameApp {
     if (this.matchEnded || this.mode !== 'pvp') return;
     const myKills = this.localPlayer?.kills ?? 0;
     if (myKills >= 8) {
-      this.finishMatch(true, '竞技场主宰', `8 击杀达成 · 战功 ${this.localPlayer?.score ?? 0}`, false);
+      this.finishMatch(true, '竞技场主宰', `8 击杀 · 战功 ${this.localPlayer?.score ?? 0}`, false);
       return;
     }
     for (const r of this.remotePlayers.values()) {
@@ -2155,7 +2317,8 @@ export class GameApp {
     requestAnimationFrame(this.animate);
 
     const rawDt = Math.min(0.05, this.clock.getDelta());
-    const simScale = this.slowMo && this.isCombatMode() ? 0.24 : 1.0;
+    const isOnline = this.mode === 'pvp' || this.mode === 'coop';
+    const simScale = this.slowMo && this.mode === 'campaign' ? 0.24 : 1.0;
     const dt = rawDt * simScale;
     this.elapsed += dt;
     this.shockPulse = Math.max(0, this.shockPulse - rawDt * 1.9);
@@ -2164,26 +2327,31 @@ export class GameApp {
     if (this.isCombatMode()) {
       this.updateLocalPlayer(dt);
       for (const r of this.remotePlayers.values()) {
-        r.updateRemote(dt, this.vfx);
+        r.updateRemote(dt, this.world, this.vfx);
       }
       this.updateAiDirector(dt);
       this.updateProjectiles(dt);
       this.updatePowerUps(dt);
 
-      // Network state broadcast at 20Hz
-      if ((this.mode === 'pvp' || this.mode === 'coop') && this.localPlayer) {
+      // Drift-free 25Hz state sync + instant flush on stop transition
+      if (isOnline && this.localPlayer) {
         this.netSyncAccum += rawDt;
-        if (this.netSyncAccum >= 0.05) {
+        const nowMoving = Math.hypot(this.localPlayer.syncVx, this.localPlayer.syncVz) > 0.05;
+        const justStopped = this.wasLocalMoving && !nowMoving;
+        this.wasLocalMoving = nowMoving;
+
+        if (justStopped || this.netSyncAccum >= 0.04) {
           this.netSyncAccum = 0;
           this.net.publishTankState(this.localPlayer.toNetSnapshot(0));
         }
 
         if (this.mode === 'coop' && this.net.isHost()) {
           this.aiSyncAccum += rawDt;
-          if (this.aiSyncAccum >= 0.085) {
+          if (this.aiSyncAccum >= 0.07) {
             this.aiSyncAccum = 0;
             this.net.publishEvent({
               t: 'ai',
+              seq: ++this.aiSyncSeq,
               waveLeft: this.enemyQueue.length + this.aiTanks.length,
               baseAlive: this.world.baseAlive,
               enemies: this.aiTanks.map((a) => [
@@ -2191,8 +2359,8 @@ export class GameApp {
                 a.archetype || 'scout',
                 Number(a.x.toFixed(2)),
                 Number(a.z.toFixed(2)),
-                Number(a.vx.toFixed(2)),
-                Number(a.vz.toFixed(2)),
+                Number(a.syncVx.toFixed(2)),
+                Number(a.syncVz.toFixed(2)),
                 Number(a.hullAngle.toFixed(2)),
                 Number(a.turretAngle.toFixed(2)),
                 a.hp,
@@ -2228,13 +2396,19 @@ export class GameApp {
     this.world.update(dt, this.elapsed);
     this.vfx.update(dt);
 
-    const pVec =
-      this.localPlayer && this.localPlayer.alive
-        ? new THREE.Vector3(this.localPlayer.x, 0, this.localPlayer.z)
-        : null;
+    let pVec: THREE.Vector3 | null = null;
+    if (this.localPlayer && this.localPlayer.alive) {
+      pVec = this.tmpPlayerFocus.set(this.localPlayer.x, 0, this.localPlayer.z);
+    }
     this.cameraRig.update(rawDt, pVec, this.localPlayer?.turretAngle);
 
-    const tiltAmt = this.cameraRig.preset === 'diorama' ? 0.36 : 0.0;
+    // Align diegetic HP bars cleanly to camera orientation
+    const camQuat = this.cameraRig.camera.quaternion;
+    for (const t of this.getAllTanks()) {
+      t.updateBillboard(camQuat);
+    }
+
+    const tiltAmt = this.cameraRig.preset === 'diorama' ? 0.32 : 0.0;
     this.post.render(this.elapsed, this.shockPulse + this.cameraRig.shakeIntensity * 0.4, tiltAmt);
   };
 }

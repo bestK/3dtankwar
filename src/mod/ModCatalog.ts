@@ -55,11 +55,28 @@ export function loadVehicleMod(selection: string): Promise<THREE.Object3D | null
         mod.url,
         (gltf) => {
           const scene = gltf.scene;
+          let totalVerts = 0;
+          scene.traverse((object) => {
+            const mesh = object as THREE.Mesh;
+            if (mesh.isMesh && mesh.geometry?.attributes?.position) {
+              totalVerts += mesh.geometry.attributes.position.count;
+            }
+          });
+          // Skip expensive shadow-map rasterization on ultra-dense >25k-vertex models;
+          // every vehicle already has a crisp ground contact shadow under its chassis.
+          const allowShadowCast = totalVerts <= 25000;
           scene.traverse((object) => {
             const mesh = object as THREE.Mesh;
             if (mesh.isMesh) {
-              mesh.castShadow = true;
+              mesh.castShadow = allowShadowCast;
               mesh.receiveShadow = true;
+              const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+              for (const m of mats) {
+                const std = m as THREE.MeshStandardMaterial;
+                if (std && std.isMeshStandardMaterial) {
+                  std.envMapIntensity = Math.max(0.85, std.envMapIntensity ?? 1.0);
+                }
+              }
             }
           });
           resolve(scene);

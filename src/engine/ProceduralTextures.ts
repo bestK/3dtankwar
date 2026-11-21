@@ -17,6 +17,7 @@ export interface TextureBundle {
   scorchTex: THREE.CanvasTexture;
   trackDecalTex: THREE.CanvasTexture;
   softGlowTex: THREE.CanvasTexture;
+  contactShadowTex: THREE.CanvasTexture;
 }
 
 function hash2D(x: number, y: number, seed = 1337): number {
@@ -101,12 +102,13 @@ function makeTex(
   srgb = false,
   repeatX = 1,
   repeatY = 1,
+  aniso = 4,
 ): THREE.CanvasTexture {
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(repeatX, repeatY);
-  tex.anisotropy = 8;
+  tex.anisotropy = aniso;
   if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
   return tex;
@@ -117,52 +119,53 @@ function createStudioEnvironment(renderer: THREE.WebGLRenderer): THREE.Texture {
   pmrem.compileEquirectangularShader();
 
   const envScene = new THREE.Scene();
-  envScene.background = new THREE.Color(0x0c1118);
+  envScene.background = new THREE.Color(0x0a0f16);
 
-  // Overhead warm tungsten softbox
+  // Overhead warm tungsten key softbox
   const keyPanel = new THREE.Mesh(
-    new THREE.PlaneGeometry(28, 28),
-    new THREE.MeshBasicMaterial({ color: new THREE.Color(3.6, 2.8, 1.9), side: THREE.DoubleSide }),
+    new THREE.PlaneGeometry(30, 30),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(3.9, 3.0, 2.0), side: THREE.DoubleSide }),
   );
-  keyPanel.position.set(10, 22, 8);
+  keyPanel.position.set(11, 23, 9);
   keyPanel.lookAt(0, 0, 0);
   envScene.add(keyPanel);
 
-  // Cool steel-blue opposing rim softbox
+  // Cool cobalt-steel opposing rim softbox
   const rimPanel = new THREE.Mesh(
-    new THREE.PlaneGeometry(24, 16),
-    new THREE.MeshBasicMaterial({ color: new THREE.Color(0.85, 1.45, 2.5), side: THREE.DoubleSide }),
+    new THREE.PlaneGeometry(26, 18),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(0.95, 1.65, 2.85), side: THREE.DoubleSide }),
   );
-  rimPanel.position.set(-18, 12, -14);
+  rimPanel.position.set(-19, 13, -15);
   rimPanel.lookAt(0, 0, 0);
   envScene.add(rimPanel);
 
-  // Warm forge horizon strip
+  // Warm brass horizon strip for crisp metallic grazing reflections
   const forgeStrip = new THREE.Mesh(
-    new THREE.CylinderGeometry(32, 32, 3.2, 32, 1, true),
-    new THREE.MeshBasicMaterial({ color: new THREE.Color(0.95, 0.55, 0.25), side: THREE.BackSide }),
+    new THREE.CylinderGeometry(32, 32, 2.8, 32, 1, true),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(1.15, 0.68, 0.3), side: THREE.BackSide }),
   );
-  forgeStrip.position.y = 2;
+  forgeStrip.position.y = 2.2;
   envScene.add(forgeStrip);
 
   // Subtle floor bounce
   const bounce = new THREE.Mesh(
     new THREE.CircleGeometry(30, 24),
-    new THREE.MeshBasicMaterial({ color: new THREE.Color(0.18, 0.2, 0.24), side: THREE.DoubleSide }),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(0.2, 0.24, 0.3), side: THREE.DoubleSide }),
   );
   bounce.rotation.x = -Math.PI / 2;
   bounce.position.y = -12;
   envScene.add(bounce);
 
-  const rt = pmrem.fromScene(envScene, 0.035);
+  const rt = pmrem.fromScene(envScene, 0.032);
   pmrem.dispose();
   return rt.texture;
 }
 
 export function createProceduralTextures(renderer: THREE.WebGLRenderer): TextureBundle {
+  const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   const envMap = createStudioEnvironment(renderer);
 
-  // 1. Kiln-fired Brick Grain & Mortar
+  // 1. Kiln-fired Brick Grain & Mortar Bevel
   const bSize = 256;
   const bDiff = document.createElement('canvas');
   bDiff.width = bSize;
@@ -180,21 +183,25 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Texture
     for (let x = 0; x < bSize; x++) {
       const n1 = fbm(x, y, 28, 11);
       const n2 = valueNoise(x, y, 5, 77);
-      const pit = valueNoise(x, y, 2.5, 191) > 0.78 ? -0.22 : 0;
-      const edgeDist = Math.min(x, y, bSize - 1 - x, bSize - 1 - y) / 14;
+      const pit = valueNoise(x, y, 2.5, 191) > 0.79 ? -0.24 : 0;
+      const edgeDist = Math.min(x, y, bSize - 1 - x, bSize - 1 - y) / 16;
       const bevel = Math.min(1, edgeDist);
 
-      const h = bevel * 0.7 + n1 * 0.22 + n2 * 0.08 + pit;
+      const h = bevel * 0.74 + n1 * 0.2 + n2 * 0.08 + pit;
       bHeight[y * bSize + x] = h;
 
       const idx = (y * bSize + x) * 4;
-      const shade = 0.8 + n1 * 0.28 + pit * 0.35;
-      bImg.data[idx] = Math.min(255, Math.round(212 * shade));
-      bImg.data[idx + 1] = Math.min(255, Math.round(108 * shade));
-      bImg.data[idx + 2] = Math.min(255, Math.round(76 * shade));
+      const mortarMix = bevel < 0.35 ? 1 - bevel / 0.35 : 0;
+      const shade = 0.82 + n1 * 0.28 + pit * 0.34;
+      const rBrick = Math.min(255, Math.round(220 * shade));
+      const gBrick = Math.min(255, Math.round(114 * shade));
+      const bBrick = Math.min(255, Math.round(80 * shade));
+      bImg.data[idx] = Math.round(rBrick * (1 - mortarMix * 0.42) + 86 * mortarMix * 0.42);
+      bImg.data[idx + 1] = Math.round(gBrick * (1 - mortarMix * 0.35) + 78 * mortarMix * 0.35);
+      bImg.data[idx + 2] = Math.round(bBrick * (1 - mortarMix * 0.3) + 72 * mortarMix * 0.3);
       bImg.data[idx + 3] = 255;
 
-      const rVal = Math.round((0.76 + (1 - bevel) * 0.16 - n2 * 0.1) * 255);
+      const rVal = Math.round((0.74 + (1 - bevel) * 0.18 - n2 * 0.1) * 255);
       bRImg.data[idx] = rVal;
       bRImg.data[idx + 1] = rVal;
       bRImg.data[idx + 2] = rVal;
@@ -203,7 +210,7 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Texture
   }
   bCtx.putImageData(bImg, 0, 0);
   bRCtx.putImageData(bRImg, 0, 0);
-  const brickNormalCanvas = heightToNormalCanvas(bHeight, bSize, 2.4);
+  const brickNormalCanvas = heightToNormalCanvas(bHeight, bSize, 2.6);
 
   // 2. Riveted Rolled Armor Steel
   const sSize = 256;
@@ -220,33 +227,31 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Texture
   const sHeight = new Float32Array(sSize * sSize);
 
   const rivets = [
-    [28, 28],
-    [228, 28],
-    [28, 228],
-    [228, 228],
-    [128, 28],
-    [128, 228],
-    [28, 128],
-    [228, 128],
+    [26, 26],
+    [230, 26],
+    [26, 230],
+    [230, 230],
+    [128, 26],
+    [128, 230],
+    [26, 128],
+    [230, 128],
   ];
 
   for (let y = 0; y < sSize; y++) {
     for (let x = 0; x < sSize; x++) {
       const brush = valueNoise(x * 0.25, y * 3.5, 8, 303) * 0.12 + fbm(x, y, 36, 509) * 0.14;
       const border = Math.min(x, y, sSize - 1 - x, sSize - 1 - y);
-      let h = border < 10 ? border / 10 : 1.0;
+      let h = border < 12 ? border / 12 : 1.0;
 
-      // Inner recessed cross panel seam
       if (Math.abs(x - 128) < 3 || Math.abs(y - 128) < 3) {
-        h -= 0.22;
+        h -= 0.24;
       }
 
-      // Raised rivets
       let rivetBoost = 0;
       for (const [rx, ry] of rivets) {
         const d = Math.hypot(x - rx, y - ry);
-        if (d < 8) {
-          rivetBoost = Math.cos((d / 8) * (Math.PI * 0.5)) * 0.45;
+        if (d < 8.5) {
+          rivetBoost = Math.cos((d / 8.5) * (Math.PI * 0.5)) * 0.48;
           break;
         }
       }
@@ -255,13 +260,13 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Texture
       sHeight[y * sSize + x] = h;
 
       const idx = (y * sSize + x) * 4;
-      const lum = 152 + brush * 85 + rivetBoost * 45 - (border < 8 ? 28 : 0);
-      sImg.data[idx] = Math.min(255, Math.max(0, Math.round(lum * 0.93)));
-      sImg.data[idx + 1] = Math.min(255, Math.max(0, Math.round(lum * 0.98)));
-      sImg.data[idx + 2] = Math.min(255, Math.max(0, Math.round(lum * 1.06)));
+      const lum = 158 + brush * 86 + rivetBoost * 52 - (border < 9 ? 32 : 0);
+      sImg.data[idx] = Math.min(255, Math.max(0, Math.round(lum * 0.92)));
+      sImg.data[idx + 1] = Math.min(255, Math.max(0, Math.round(lum * 0.99)));
+      sImg.data[idx + 2] = Math.min(255, Math.max(0, Math.round(lum * 1.08)));
       sImg.data[idx + 3] = 255;
 
-      const rough = Math.min(255, Math.max(35, Math.round((0.32 + brush * 0.5 - rivetBoost * 0.2) * 255)));
+      const rough = Math.min(255, Math.max(30, Math.round((0.28 + brush * 0.48 - rivetBoost * 0.2) * 255)));
       sRImg.data[idx] = rough;
       sRImg.data[idx + 1] = rough;
       sRImg.data[idx + 2] = rough;
@@ -270,7 +275,7 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Texture
   }
   sCtx.putImageData(sImg, 0, 0);
   sRCtx.putImageData(sRImg, 0, 0);
-  const steelNormalCanvas = heightToNormalCanvas(sHeight, sSize, 2.8);
+  const steelNormalCanvas = heightToNormalCanvas(sHeight, sSize, 2.9);
 
   // 3. Basalt War-Table Tactical Floor (tiles every 2x2 macro cell)
   const fSize = 512;
@@ -290,29 +295,33 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Texture
     for (let x = 0; x < fSize; x++) {
       const slate = fbm(x, y, 48, 811);
       const micro = valueNoise(x, y, 6, 919);
-      const macroGroove = x < 4 || y < 4 || x > fSize - 5 || y > fSize - 5 ? -0.28 : 0;
+      const macroGroove = x < 4 || y < 4 || x > fSize - 5 || y > fSize - 5 ? -0.3 : 0;
       const subGroove = Math.abs(x - 256) < 2 || Math.abs(y - 256) < 2 ? -0.12 : 0;
 
       const h = 0.6 + slate * 0.26 + micro * 0.08 + macroGroove + subGroove;
       fHeight[y * fSize + x] = h;
 
       const idx = (y * fSize + x) * 4;
-      const base = 36 + slate * 20 + micro * 7 + (macroGroove < 0 ? -8 : 0);
-      // Subtle brass hairline on macro tile border
+      const base = 38 + slate * 22 + micro * 7 + (macroGroove < 0 ? -9 : 0);
+      const isCornerCross =
+        (x < 14 && y < 3) ||
+        (x < 3 && y < 14) ||
+        (x > fSize - 15 && y < 3) ||
+        (x < 3 && y > fSize - 15);
       const isBrassTick =
-        (x === 5 || y === 5) && ((x > 20 && x < 52) || (y > 20 && y < 52));
+        isCornerCross || ((x === 5 || y === 5) && ((x > 22 && x < 54) || (y > 22 && y < 54)));
       if (isBrassTick) {
-        fImg.data[idx] = 122;
-        fImg.data[idx + 1] = 96;
-        fImg.data[idx + 2] = 52;
+        fImg.data[idx] = 138;
+        fImg.data[idx + 1] = 108;
+        fImg.data[idx + 2] = 56;
       } else {
-        fImg.data[idx] = Math.round(base * 0.92);
+        fImg.data[idx] = Math.round(base * 0.91);
         fImg.data[idx + 1] = Math.round(base * 1.02);
-        fImg.data[idx + 2] = Math.round(base * 1.18);
+        fImg.data[idx + 2] = Math.round(base * 1.2);
       }
       fImg.data[idx + 3] = 255;
 
-      const r = Math.round((0.58 + slate * 0.24 - (macroGroove < 0 ? 0.1 : 0)) * 255);
+      const r = Math.round((0.55 + slate * 0.24 - (macroGroove < 0 ? 0.1 : 0)) * 255);
       fRImg.data[idx] = r;
       fRImg.data[idx + 1] = r;
       fRImg.data[idx + 2] = r;
@@ -321,7 +330,7 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Texture
   }
   fCtx.putImageData(fImg, 0, 0);
   fRCtx.putImageData(fRImg, 0, 0);
-  const floorNormalCanvas = heightToNormalCanvas(fHeight, fSize, 2.0);
+  const floorNormalCanvas = heightToNormalCanvas(fHeight, fSize, 2.1);
 
   // 4. Scratched Glacial Ice Normal
   const iSize = 256;
@@ -333,7 +342,7 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Texture
       iHeight[y * iSize + x] = fbm(x, y, 32, 1409) * 0.5 + diag1 * 0.25 + diag2 * 0.25;
     }
   }
-  const iceNormalCanvas = heightToNormalCanvas(iHeight, iSize, 1.4);
+  const iceNormalCanvas = heightToNormalCanvas(iHeight, iSize, 1.5);
 
   // 5. Cast Armor Micro-Grain Normal
   const aSize = 128;
@@ -350,12 +359,12 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Texture
   tCanvas.width = 64;
   tCanvas.height = 256;
   const tCtx = tCanvas.getContext('2d')!;
-  tCtx.fillStyle = '#1b1f24';
+  tCtx.fillStyle = '#181c22';
   tCtx.fillRect(0, 0, 64, 256);
   for (let y = 0; y < 256; y += 16) {
-    tCtx.fillStyle = '#363e48';
+    tCtx.fillStyle = '#38414c';
     tCtx.fillRect(3, y + 2, 58, 9);
-    tCtx.fillStyle = '#4c5663';
+    tCtx.fillStyle = '#566272';
     tCtx.fillRect(6, y + 3, 22, 4);
     tCtx.fillRect(36, y + 3, 22, 4);
   }
@@ -366,9 +375,9 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Texture
   scCanvas.height = 128;
   const scCtx = scCanvas.getContext('2d')!;
   const scGrad = scCtx.createRadialGradient(64, 64, 4, 64, 64, 60);
-  scGrad.addColorStop(0, 'rgba(10, 8, 7, 0.92)');
+  scGrad.addColorStop(0, 'rgba(8, 7, 6, 0.94)');
   scGrad.addColorStop(0.38, 'rgba(24, 18, 15, 0.72)');
-  scGrad.addColorStop(0.72, 'rgba(38, 30, 24, 0.25)');
+  scGrad.addColorStop(0.72, 'rgba(38, 30, 24, 0.24)');
   scGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
   scCtx.fillStyle = scGrad;
   scCtx.fillRect(0, 0, 128, 128);
@@ -378,7 +387,7 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Texture
   trCanvas.width = 64;
   trCanvas.height = 64;
   const trCtx = trCanvas.getContext('2d')!;
-  trCtx.fillStyle = 'rgba(12, 14, 18, 0.42)';
+  trCtx.fillStyle = 'rgba(10, 12, 16, 0.45)';
   trCtx.fillRect(6, 8, 14, 48);
   trCtx.fillRect(44, 8, 14, 48);
 
@@ -389,34 +398,53 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Texture
   const glCtx = glCanvas.getContext('2d')!;
   const glGrad = glCtx.createRadialGradient(64, 64, 0, 64, 64, 64);
   glGrad.addColorStop(0, 'rgba(255, 255, 255, 1)');
-  glGrad.addColorStop(0.28, 'rgba(255, 220, 160, 0.65)');
-  glGrad.addColorStop(0.65, 'rgba(255, 160, 70, 0.18)');
+  glGrad.addColorStop(0.28, 'rgba(255, 222, 165, 0.68)');
+  glGrad.addColorStop(0.65, 'rgba(255, 162, 72, 0.18)');
   glGrad.addColorStop(1, 'rgba(255, 120, 30, 0)');
   glCtx.fillStyle = glGrad;
   glCtx.fillRect(0, 0, 128, 128);
+
+  // 10. Ground Contact Ambient Occlusion Shadow Blob (grounds tanks & MOD cars)
+  const csCanvas = document.createElement('canvas');
+  csCanvas.width = 128;
+  csCanvas.height = 128;
+  const csCtx = csCanvas.getContext('2d')!;
+  csCtx.save();
+  csCtx.translate(64, 64);
+  csCtx.scale(0.84, 1.0);
+  const csGrad = csCtx.createRadialGradient(0, 0, 8, 0, 0, 58);
+  csGrad.addColorStop(0, 'rgba(4, 6, 10, 0.72)');
+  csGrad.addColorStop(0.56, 'rgba(6, 9, 14, 0.42)');
+  csGrad.addColorStop(0.84, 'rgba(6, 9, 14, 0.12)');
+  csGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  csCtx.fillStyle = csGrad;
+  csCtx.fillRect(-64, -64, 128, 128);
+  csCtx.restore();
 
   const scorchTex = new THREE.CanvasTexture(scCanvas);
   scorchTex.colorSpace = THREE.SRGBColorSpace;
   const trackDecalTex = new THREE.CanvasTexture(trCanvas);
   const softGlowTex = new THREE.CanvasTexture(glCanvas);
   softGlowTex.colorSpace = THREE.SRGBColorSpace;
+  const contactShadowTex = new THREE.CanvasTexture(csCanvas);
 
   return {
     envMap,
-    brickMap: makeTex(bDiff, true, 1, 1),
-    brickNormal: makeTex(brickNormalCanvas, false, 1, 1),
-    brickRoughness: makeTex(bRoughCanvas, false, 1, 1),
-    steelMap: makeTex(sDiff, true, 1, 1),
-    steelNormal: makeTex(steelNormalCanvas, false, 1, 1),
-    steelRoughness: makeTex(sRough, false, 1, 1),
-    floorMap: makeTex(fDiff, true, 13, 13),
-    floorNormal: makeTex(floorNormalCanvas, false, 13, 13),
-    floorRoughness: makeTex(fRough, false, 13, 13),
-    iceNormal: makeTex(iceNormalCanvas, false, 6, 6),
-    armorNormal: makeTex(armorNormalCanvas, false, 2, 2),
-    treadMap: makeTex(tCanvas, true, 1, 4),
+    brickMap: makeTex(bDiff, true, 1, 1, maxAniso),
+    brickNormal: makeTex(brickNormalCanvas, false, 1, 1, maxAniso),
+    brickRoughness: makeTex(bRoughCanvas, false, 1, 1, maxAniso),
+    steelMap: makeTex(sDiff, true, 1, 1, maxAniso),
+    steelNormal: makeTex(steelNormalCanvas, false, 1, 1, maxAniso),
+    steelRoughness: makeTex(sRough, false, 1, 1, maxAniso),
+    floorMap: makeTex(fDiff, true, 13, 13, maxAniso),
+    floorNormal: makeTex(floorNormalCanvas, false, 13, 13, maxAniso),
+    floorRoughness: makeTex(fRough, false, 13, 13, maxAniso),
+    iceNormal: makeTex(iceNormalCanvas, false, 6, 6, maxAniso),
+    armorNormal: makeTex(armorNormalCanvas, false, 2, 2, maxAniso),
+    treadMap: makeTex(tCanvas, true, 1, 4, maxAniso),
     scorchTex,
     trackDecalTex,
     softGlowTex,
+    contactShadowTex,
   };
 }

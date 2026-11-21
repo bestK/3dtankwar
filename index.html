@@ -6,7 +6,7 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
-    <title>装甲战线 1985 · 3D 坦克大战</title>
+    <title>装甲战线 1985</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -25,10 +25,10 @@
 
     <!-- Top Tactical Bar -->
     <header id="hud-top" class="hud-top hidden">
-      <div class="hud-cluster">
-        <button id="btn-home" class="icon-chip" title="返回主菜单" aria-label="返回主菜单">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4">
-            <path d="M15 18l-6-6 6-6" />
+      <div class="hud-cluster left">
+        <button id="btn-home" class="icon-chip" aria-label="返回主界面">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2">
+            <path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
         </button>
         <div id="hud-stage-pill" class="stat-chip brass">第 01 关</div>
@@ -54,9 +54,9 @@
         <div class="tool-strip">
           <button id="btn-camera" class="tool-chip">沙盘视角</button>
           <button id="btn-slowmo" class="tool-chip">子弹时间</button>
-          <button id="btn-audio" class="tool-chip active">音效</button>
+          <button id="btn-audio" class="tool-chip active">音效开</button>
           <div id="voice-speaking" class="voice-speaking hidden"><span id="voice-speaking-names"></span></div>
-          <button id="btn-voice" class="tool-chip voice-toggle">语音</button>
+          <button id="btn-voice" class="tool-chip voice-toggle">开麦</button>
           <button id="btn-mute" class="tool-chip voice-mute hidden">闭麦</button>
           <button id="btn-chat-mobile" class="tool-chip mobile-only">聊天</button>
           <button id="btn-fullscreen" class="tool-chip mobile-only">横屏</button>
@@ -68,9 +68,21 @@
             <span class="settings-title">设置</span>
             <button id="btn-settings-close" class="settings-close" aria-label="关闭设置">✕</button>
           </div>
+
           <div class="settings-row">
-            <label for="range-turret-speed">键盘炮塔转速</label>
-            <span id="turret-speed-value" class="settings-value">2.6</span>
+            <span>画质</span>
+          </div>
+          <div class="segmented-row" role="group" aria-label="画质">
+            <button class="seg-chip quality-btn" data-quality="high">高</button>
+            <button class="seg-chip quality-btn" data-quality="medium">中</button>
+            <button class="seg-chip quality-btn" data-quality="low">低</button>
+          </div>
+
+          <div class="settings-divider"></div>
+
+          <div class="settings-row">
+            <label for="range-turret-speed">炮塔转速</label>
+            <span id="turret-speed-value" class="settings-value">2.6 rad/s</span>
           </div>
           <input
             id="range-turret-speed"
@@ -81,15 +93,16 @@
             step="0.1"
             value="2.6"
           />
-          <div class="settings-scale"><span>稳</span><span>快</span></div>
+
           <div class="settings-divider"></div>
+
           <div class="settings-row">
             <label for="select-mod-hud">座驾 MOD</label>
             <button id="btn-mod-flip-hud" class="mini-action">翻转</button>
           </div>
           <select id="select-mod-hud" class="field-input mod-select-hud"></select>
           <div id="settings-tools" class="settings-tools"></div>
-          <button id="btn-settings-resume" class="cta-chip compact settings-resume">继续游戏</button>
+          <button id="btn-settings-resume" class="cta-chip compact settings-resume">继续作战</button>
         </div>
       </div>
     </header>
@@ -111,6 +124,7 @@
       <button class="brush-chip" data-brush="5"><span class="swatch ice"></span>冰原</button>
       <button class="brush-chip" data-brush="0"><span class="swatch erase"></span>清除</button>
       <span class="bar-sep"></span>
+      <button id="btn-ws-fine" class="tool-chip">1×1</button>
       <button id="btn-ws-template" class="tool-chip">经典布局</button>
       <button id="btn-ws-clear" class="tool-chip">清空</button>
       <button id="btn-ws-play" class="cta-chip compact">实弹演练</button>
@@ -138,7 +152,7 @@
               id="input-turn-url"
               class="field-input turn-url"
               type="text"
-              placeholder="TURN 地址，如 turn:你的域名:3478"
+              placeholder="turn:host:3478"
             />
           </div>
           <div class="broker-row">
@@ -146,39 +160,47 @@
               id="input-turn-user"
               class="field-input turn-cred"
               type="text"
-              placeholder="TURN 用户名"
+              placeholder="TURN 账号"
             />
             <input
               id="input-turn-pass"
               class="field-input turn-cred"
               type="password"
-              placeholder="TURN 密码"
+              placeholder="TURN 密钥"
             />
           </div>
-          <p class="broker-hint">留空则仅用 STUN；修改后重新开启语音生效</p>
         </div>
       </div>
 
       <div class="hero-dock">
-        <h1 class="hero-title">装甲战线<span>1985</span></h1>
-
-        <div class="nickname-row">
-          <label class="mod-label" for="input-nickname">游戏昵称</label>
-          <input
-            id="input-nickname"
-            class="field-input nickname-input"
-            type="text"
-            maxlength="10"
-            autocomplete="nickname"
-            placeholder="输入昵称"
-          />
-          <button id="btn-save-nickname" class="tool-chip nickname-save">保存</button>
+        <div class="hero-brand">
+          <h1 class="hero-title">装甲战线<span>1985</span></h1>
+          <div class="segmented-row hero-quality" role="group" aria-label="画质">
+            <button class="seg-chip quality-btn" data-quality="high">高画质</button>
+            <button class="seg-chip quality-btn" data-quality="medium">均衡</button>
+            <button class="seg-chip quality-btn" data-quality="low">流畅</button>
+          </div>
         </div>
 
-        <div class="mod-row">
-          <label class="mod-label" for="select-mod">座驾 MOD</label>
-          <select id="select-mod" class="field-input mod-select"></select>
-          <button id="btn-mod-flip" class="tool-chip mod-flip" title="翻转车头方向">翻转</button>
+        <div class="config-grid">
+          <div class="nickname-row">
+            <label class="mod-label" for="input-nickname">呼号</label>
+            <input
+              id="input-nickname"
+              class="field-input nickname-input"
+              type="text"
+              maxlength="10"
+              autocomplete="nickname"
+              placeholder="呼号"
+            />
+            <button id="btn-save-nickname" class="tool-chip nickname-save">保存</button>
+          </div>
+
+          <div class="mod-row">
+            <label class="mod-label" for="select-mod">座驾</label>
+            <select id="select-mod" class="field-input mod-select"></select>
+            <button id="btn-mod-flip" class="tool-chip mod-flip">翻转</button>
+          </div>
         </div>
 
         <nav class="mode-tabs" role="tablist">
@@ -212,7 +234,7 @@
             <button id="btn-join-room" class="tool-chip accent">切换房间</button>
             <button id="btn-quick-match" class="tool-chip">快速匹配</button>
             <button id="btn-share-link" class="tool-chip">复制邀请</button>
-            <button id="btn-voice-lobby" class="tool-chip voice-toggle">语音</button>
+            <button id="btn-voice-lobby" class="tool-chip voice-toggle">开麦</button>
             <button id="btn-mute-lobby" class="tool-chip voice-mute hidden">闭麦</button>
             <button id="btn-chat-lobby" class="tool-chip mobile-only">聊天</button>
           </div>
@@ -242,7 +264,7 @@
 
     <!-- Vote Kick -->
     <div id="vote-panel" class="vote-panel hidden">
-      <div id="vote-title" class="vote-title">投票踢出</div>
+      <div id="vote-title" class="vote-title">投票移出</div>
       <div id="vote-detail" class="vote-detail"></div>
       <div class="vote-actions">
         <button id="btn-vote-yes" class="cta-chip compact">同意</button>
@@ -260,33 +282,32 @@
         <div id="stick-move-knob" class="stick-knob"></div>
       </div>
       <div id="stick-aim" class="stick-zone aim">
-        <span class="stick-label">瞄准 · 松手开炮</span>
+        <span class="stick-label">瞄准</span>
         <div id="stick-aim-knob" class="stick-knob"></div>
       </div>
 
       <div id="rotate-hint" class="rotate-hint">
         <div class="rotate-card">
           <svg class="rotate-glyph" viewBox="0 0 48 48" aria-hidden="true">
-            <rect x="14" y="6" width="20" height="36" rx="4" fill="none" stroke="currentColor" stroke-width="2.4" />
+            <rect x="14" y="6" width="20" height="36" rx="4" fill="none" stroke="currentColor" stroke-width="2.2" />
             <path
               d="M32 19a10 10 0 1 1-11 11"
               fill="none"
               stroke="currentColor"
-              stroke-width="2.4"
+              stroke-width="2.2"
               stroke-linecap="round"
             />
             <path
               d="M18 26l3 4 4-3"
               fill="none"
               stroke="currentColor"
-              stroke-width="2.4"
+              stroke-width="2.2"
               stroke-linecap="round"
               stroke-linejoin="round"
             />
           </svg>
-          <div class="rotate-title">横屏作战体验更佳</div>
-          <p class="rotate-tip">把手机横过来，或点下方按钮自动全屏横屏</p>
-          <button id="btn-rotate" class="cta-chip compact">进入全屏横屏</button>
+          <div class="rotate-title">横屏模式</div>
+          <button id="btn-rotate" class="cta-chip compact">全屏横屏</button>
           <button id="btn-rotate-dismiss" class="rotate-dismiss">竖屏继续</button>
         </div>
       </div>
@@ -304,8 +325,8 @@
       </div>
     </section>
 
-    <!-- In-Battle Chat & Voice Audio -->
-    <div id="voice-audio-root" class="hidden"></div>
+    <!-- In-Battle Chat & Offscreen Voice Audio Sink (never display:none so WebRTC plays reliably) -->
+    <div id="voice-audio-root" class="voice-audio-root" aria-hidden="true"></div>
     <div id="chat-log" class="chat-log" aria-live="polite"></div>
     <div id="chat-bar" class="chat-bar hidden">
       <input
@@ -316,18 +337,10 @@
         autocomplete="off"
         autocapitalize="off"
         spellcheck="false"
-        placeholder="输入消息 · Enter 发送 · Esc 关闭"
+        placeholder="消息"
       />
+      <button id="btn-chat-send" class="cta-chip compact chat-send">发送</button>
     </div>
-
-    <!-- Bottom Controls Strip -->
-    <footer id="controls-hint" class="controls-hint">
-      <span><kbd>WASD</kbd> 驾驶</span>
-      <span><kbd>← →</kbd> / <kbd>Q E</kbd> 旋转炮塔</span>
-      <span><kbd>空格</kbd> / <kbd>左键</kbd> 开炮 · 长按蓄力穿甲</span>
-      <span><kbd>右键拖拽</kbd> 360°自由视角</span>
-      <span><kbd>滚轮</kbd> 缩放 · <kbd>Tab</kbd> 子弹时间 · <kbd>Enter</kbd> 聊天</span>
-    </footer>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -4,14 +4,13 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { QualityTier } from '../types';
 
 const CinematicDioramaShader = {
   uniforms: {
     tDiffuse: { value: null },
     uTime: { value: 0 },
     uShock: { value: 0 },
-    uTiltAmount: { value: 0.35 },
-    uTexel: { value: new THREE.Vector2(1 / 1920, 1 / 1080) },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -24,36 +23,33 @@ const CinematicDioramaShader = {
     uniform sampler2D tDiffuse;
     uniform float uTime;
     uniform float uShock;
-    uniform float uTiltAmount;
-    uniform vec2 uTexel;
     varying vec2 vUv;
 
     void main() {
       vec2 center = vUv - 0.5;
       float dist = length(center);
 
-      // Subtle tilt-shift blur at far top/bottom edges for miniature war-table feel
-      float edgeFocus = smoothstep(0.28, 0.52, abs(vUv.y - 0.52)) * uTiltAmount;
-      vec2 blurStep = vec2(0.0, uTexel.y * 2.4 * edgeFocus);
+      vec3 col;
+      // Fast 1-tap path during steady play; 3-tap radial chromatic shock only on impacts
+      if (uShock > 0.015) {
+        vec2 caOffset = center * (uShock * 0.014) * dist;
+        col.r = texture2D(tDiffuse, vUv + caOffset).r;
+        col.g = texture2D(tDiffuse, vUv).g;
+        col.b = texture2D(tDiffuse, vUv - caOffset).b;
+      } else {
+        col = texture2D(tDiffuse, vUv).rgb;
+      }
 
-      // Dynamic shockwave radial chromatic offset
-      vec2 caOffset = center * (0.0018 + uShock * 0.014) * dist;
+      // Crisp warm-vs-slate contrast curve
+      col = mix(col, smoothstep(0.0, 1.0, col), 0.06);
 
-      vec3 col = texture2D(tDiffuse, vUv).rgb * 0.5;
-      col.r += texture2D(tDiffuse, vUv + caOffset + blurStep).r * 0.25;
-      col.r += texture2D(tDiffuse, vUv + caOffset - blurStep).r * 0.25;
-      col.g += texture2D(tDiffuse, vUv + blurStep).g * 0.25;
-      col.g += texture2D(tDiffuse, vUv - blurStep).g * 0.25;
-      col.b += texture2D(tDiffuse, vUv - caOffset + blurStep).b * 0.25;
-      col.b += texture2D(tDiffuse, vUv - caOffset - blurStep).b * 0.25;
-
-      // Subtle micro-grain
-      float grain = fract(sin(dot(vUv * (uTime * 0.13 + 1.0), vec2(12.9898, 78.233))) * 43758.5453);
-      col += (grain - 0.5) * 0.014;
+      // Subtle filmic micro-dither to prevent dark fog banding
+      float grain = fract(sin(dot(vUv * (uTime * 0.07 + 1.0), vec2(12.9898, 78.233))) * 43758.5453);
+      col += (grain - 0.5) * 0.009;
 
       // Clean theatrical vignette
-      float vig = smoothstep(0.92, 0.32, dist);
-      col *= mix(0.68, 1.03, vig);
+      float vig = smoothstep(0.94, 0.3, dist);
+      col *= mix(0.72, 1.03, vig);
 
       gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
     }
@@ -64,42 +60,69 @@ export class PostPipeline {
   public readonly composer: EffectComposer;
   public readonly bloomPass: UnrealBloomPass;
   private lensPass: ShaderPass;
+  private quality: QualityTier = 'high';
+  private width: number;
+  private height: number;
 
   constructor(
-    renderer: THREE.WebGLRenderer,
-    scene: THREE.Scene,
-    camera: THREE.Camera,
+    private renderer: THREE.WebGLRenderer,
+    private scene: THREE.Scene,
+    private camera: THREE.Camera,
     width: number,
     height: number,
   ) {
+    this.width = width;
+    this.height = height;
+
+    const isCoarse = window.matchMedia('(pointer: coarse)').matches;
     const rt = new THREE.WebGLRenderTarget(width, height, {
       type: THREE.HalfFloatType,
-      samples: 4,
+      samples: isCoarse ? 0 : 2,
     });
 
     this.composer = new EffectComposer(renderer, rt);
     this.composer.addPass(new RenderPass(scene, camera));
 
-    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(width, height), 0.56, 0.42, 0.88);
+    this.bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(Math.max(1, Math.floor(width * 0.5)), Math.max(1, Math.floor(height * 0.5))),
+      0.48,
+      0.38,
+      0.9,
+    );
     this.composer.addPass(this.bloomPass);
 
     this.lensPass = new ShaderPass(CinematicDioramaShader);
-    this.lensPass.uniforms.uTexel.value.set(1 / Math.max(1, width), 1 / Math.max(1, height));
     this.composer.addPass(this.lensPass);
 
     this.composer.addPass(new OutputPass());
   }
 
-  public resize(width: number, height: number): void {
-    this.composer.setSize(width, height);
-    this.bloomPass.setSize(width, height);
-    this.lensPass.uniforms.uTexel.value.set(1 / Math.max(1, width), 1 / Math.max(1, height));
+  public setQuality(tier: QualityTier): void {
+    this.quality = tier;
+    this.bloomPass.enabled = tier !== 'low';
+    this.lensPass.enabled = tier === 'high';
+    this.resize(this.width, this.height);
   }
 
-  public render(elapsed: number, shock: number, tiltAmount: number): void {
+  public resize(width: number, height: number): void {
+    this.width = Math.max(1, width);
+    this.height = Math.max(1, height);
+    if (this.quality === 'low') return;
+    this.composer.setSize(this.width, this.height);
+    const bloomScale = this.quality === 'high' ? 0.5 : 0.35;
+    this.bloomPass.setSize(
+      Math.max(1, Math.floor(this.width * bloomScale)),
+      Math.max(1, Math.floor(this.height * bloomScale)),
+    );
+  }
+
+  public render(elapsed: number, shock: number, _tiltAmount: number): void {
+    if (this.quality === 'low') {
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
     this.lensPass.uniforms.uTime.value = elapsed;
     this.lensPass.uniforms.uShock.value = shock;
-    this.lensPass.uniforms.uTiltAmount.value = tiltAmount;
     this.composer.render();
   }
 }
