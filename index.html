@@ -31,6 +31,11 @@
             <path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
         </button>
+        <div class="stat-chip fps-chip" data-fps-chip>
+          <span class="fps-dot"></span>
+          <span class="fps-val" data-fps-val>--</span>
+          <span class="fps-unit">FPS</span>
+        </div>
         <div id="hud-stage-pill" class="stat-chip brass">第 01 关</div>
         <div id="hud-enemy-strip" class="pip-strip" aria-label="敌军波次"></div>
         <div id="hud-room-chip" class="stat-chip net hidden">
@@ -73,6 +78,7 @@
             <span>画质</span>
           </div>
           <div class="segmented-row" role="group" aria-label="画质">
+            <button class="seg-chip quality-btn active" data-quality="auto">自动</button>
             <button class="seg-chip quality-btn" data-quality="high">高</button>
             <button class="seg-chip quality-btn" data-quality="medium">中</button>
             <button class="seg-chip quality-btn" data-quality="low">低</button>
@@ -107,6 +113,9 @@
       </div>
     </header>
 
+    <!-- Active Power-Up Buff Timers -->
+    <div id="hud-buffs" class="hud-buffs hidden" aria-live="off"></div>
+
     <!-- Rail-Piercer Charge Bar -->
     <div id="charge-bar-wrap" class="charge-wrap hidden">
       <div id="charge-bar-fill" class="charge-fill"></div>
@@ -128,16 +137,29 @@
       <button id="btn-ws-template" class="tool-chip">经典布局</button>
       <button id="btn-ws-clear" class="tool-chip">清空</button>
       <button id="btn-ws-play" class="cta-chip compact">实弹演练</button>
+      <span class="bar-sep"></span>
+      <div class="stat-chip fps-chip" data-fps-chip>
+        <span class="fps-dot"></span>
+        <span class="fps-val" data-fps-val>--</span>
+        <span class="fps-unit">FPS</span>
+      </div>
     </div>
 
     <!-- Hero & Online Lobby Overlay -->
     <section id="hero-overlay" class="hero-overlay">
       <div class="hero-top-status">
-        <button id="btn-broker-toggle" class="net-pill">
-          <span id="net-led" class="net-dot connecting"></span>
-          <span id="net-label">broker.emqx.io</span>
-          <span id="net-ping" class="net-ping">--</span>
-        </button>
+        <div class="hero-status-bar">
+          <div class="stat-chip fps-chip" data-fps-chip>
+            <span class="fps-dot"></span>
+            <span class="fps-val" data-fps-val>--</span>
+            <span class="fps-unit">FPS</span>
+          </div>
+          <button id="btn-broker-toggle" class="net-pill">
+            <span id="net-led" class="net-dot connecting"></span>
+            <span id="net-label">broker.emqx.io</span>
+            <span id="net-ping" class="net-ping">--</span>
+          </button>
+        </div>
 
         <div id="broker-popover" class="broker-popover hidden">
           <div class="broker-row">
@@ -176,9 +198,10 @@
         <div class="hero-brand">
           <h1 class="hero-title">装甲战线<span>1985</span></h1>
           <div class="segmented-row hero-quality" role="group" aria-label="画质">
-            <button class="seg-chip quality-btn" data-quality="high">高画质</button>
-            <button class="seg-chip quality-btn" data-quality="medium">均衡</button>
-            <button class="seg-chip quality-btn" data-quality="low">流畅</button>
+            <button class="seg-chip quality-btn active" data-quality="auto">自动</button>
+            <button class="seg-chip quality-btn" data-quality="high">高</button>
+            <button class="seg-chip quality-btn" data-quality="medium">中</button>
+            <button class="seg-chip quality-btn" data-quality="low">低</button>
           </div>
         </div>
 

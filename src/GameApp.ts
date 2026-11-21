@@ -1,15 +1,16 @@
 import * as THREE from 'three';
 import { AudioSynth } from './engine/AudioSynth';
 import { CameraRig } from './engine/CameraRig';
-import { PostPipeline } from './engine/PostPipeline';
+import { detectHardwareQualityTier, PostPipeline } from './engine/PostPipeline';
 import { createProceduralTextures, TextureBundle } from './engine/ProceduralTextures';
-import { PowerUpItem } from './entities/PowerUp';
+import { POWERUP_COLORS, PowerUpItem } from './entities/PowerUp';
 import { BallisticSight, createProjectileMesh, ProjectileData } from './entities/Projectile';
 import { Tank } from './entities/Tank';
 import { loadVehicleMod, parseMod } from './mod/ModCatalog';
 import { MqttMultiplayer } from './net/MqttMultiplayer';
 import { VoiceChat } from './net/VoiceChat';
 import {
+  BUFF_DURATION_SEC,
   CameraPreset,
   ENEMY_COLORS,
   EnemyArchetype,
@@ -21,6 +22,7 @@ import {
   PeerPresence,
   PowerUpKind,
   PublicRoomBeacon,
+  QualityMode,
   QualityTier,
   SQUAD_COLORS,
   TileType,
@@ -36,6 +38,15 @@ import {
   stampEagleFortress,
 } from './world/Stages';
 
+export interface ActiveBuffTimers {
+  speed: number;
+  armor: number;
+  attack: number;
+  shield: number;
+  freeze: number;
+  fortress: number;
+}
+
 export interface HudSnapshot {
   mode: GameMode;
   stageIndex: number;
@@ -48,6 +59,7 @@ export interface HudSnapshot {
   chargeRatio: number;
   slowMo: boolean;
   cameraPreset: CameraPreset;
+  buffs: ActiveBuffTimers;
 }
 
 export interface VoteUiState {
@@ -63,6 +75,8 @@ export interface VoteUiState {
 
 export interface GameUiBridge {
   onHudUpdate: (hud: HudSnapshot) => void;
+  onFpsUpdate: (fps: number) => void;
+  onQualityUpdate: (mode: QualityMode, tier: QualityTier) => void;
   onNetStatus: (status: 'connecting' | 'online' | 'offline', url: string, ping: number | null) => void;
   onRosterUpdate: (peers: PeerPresence[], hostId: string | null) => void;
   onPublicRooms: (rooms: PublicRoomBeacon[]) => void;
@@ -182,7 +196,13 @@ export class GameApp {
   public workshopBrush: TileType = TileType.BRICK;
   public workshopFineBrush = false;
   public slowMo = false;
+  public qualityMode: QualityMode = 'auto';
   public qualityTier: QualityTier = 'high';
+  private hardwareTier: QualityTier = 'high';
+  private autoGraceUntil = 0;
+  private autoLowStreak = 0;
+  private autoHighStreak = 0;
+  private autoDowngraded = false;
   public turretKeyTurnSpeed = 2.6;
   public playerMod = 'default';
   public matchEnded = false;
@@ -205,7 +225,7 @@ export class GameApp {
   private enemySpawnTimer = 1.0;
   private freezeTimer = 0;
   private fortressTimer = 0;
-  private pvpPowerUpTimer = 8.0;
+  private supplyDropTimer = 5.0;
   private respawnTimer = 0;
 
   private viewportRaf = 0;
@@ -250,6 +270,9 @@ export class GameApp {
 
   private clock = new THREE.Clock();
   private elapsed = 0;
+  private fpsFrames = 0;
+  private fpsSampleStart = performance.now();
+  private lastReportedFps = -1;
   private netSyncAccum = 0;
   private wasLocalMoving = false;
   private aiSyncAccum = 0;
@@ -259,17 +282,19 @@ export class GameApp {
   constructor(private container: HTMLElement, private ui: GameUiBridge) {
     const w = window.innerWidth;
     const h = window.innerHeight;
-    const isCoarse = window.matchMedia('(pointer: coarse)').matches;
 
     this.renderer = new THREE.WebGLRenderer({
       antialias: false,
       powerPreference: 'high-performance',
     });
-    this.qualityTier = isCoarse ? 'medium' : 'high';
-    const dprCap = isCoarse ? 1.35 : 1.75;
+    this.hardwareTier = detectHardwareQualityTier(this.renderer);
+    this.qualityTier = this.hardwareTier;
+    this.autoGraceUntil = performance.now() + 2200;
+    const dprCap =
+      this.qualityTier === 'high' ? 1.75 : this.qualityTier === 'medium' ? 1.35 : 1.0;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, dprCap));
     this.renderer.setSize(w, h);
-    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.enabled = this.qualityTier !== 'low';
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.08;
@@ -284,7 +309,8 @@ export class GameApp {
     this.scene.environmentIntensity = 0.82;
 
     this.cameraRig = new CameraRig(w / h);
-    this.setupLighting(isCoarse ? 1024 : 2048);
+    this.setupLighting(this.qualityTier === 'high' ? 2048 : 1024);
+    this.keyLight.castShadow = this.qualityTier !== 'low';
 
     this.world = new DioramaWorld(this.textures);
     this.scene.add(this.world.group);
@@ -379,7 +405,25 @@ export class GameApp {
     this.rimLight.intensity = atm.rimIntensity;
   }
 
+  public setQualityMode(mode: QualityMode): void {
+    this.qualityMode = mode;
+    this.autoLowStreak = 0;
+    this.autoHighStreak = 0;
+    if (mode === 'auto') {
+      this.autoDowngraded = false;
+      this.autoGraceUntil = performance.now() + 1800;
+      this.applyQualityTier(this.hardwareTier);
+    } else {
+      this.applyQualityTier(mode);
+    }
+    this.ui.onQualityUpdate(this.qualityMode, this.qualityTier);
+  }
+
   public setQualityTier(tier: QualityTier): void {
+    this.setQualityMode(tier);
+  }
+
+  private applyQualityTier(tier: QualityTier): void {
     this.qualityTier = tier;
     const dprCap = tier === 'high' ? 1.75 : tier === 'medium' ? 1.35 : 1.0;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, dprCap));
@@ -398,6 +442,53 @@ export class GameApp {
     this.viewportW = 0;
     this.viewportH = 0;
     this.applyViewportSize();
+  }
+
+  private evaluateAutoQuality(fps: number, nowPerf: number): void {
+    if (this.qualityMode !== 'auto' || document.hidden || nowPerf < this.autoGraceUntil) return;
+
+    if (fps < 44) {
+      this.autoLowStreak++;
+      this.autoHighStreak = 0;
+      if (this.autoLowStreak >= 3) {
+        this.autoLowStreak = 0;
+        if (this.qualityTier === 'high') {
+          this.autoDowngraded = true;
+          this.autoGraceUntil = nowPerf + 4500;
+          this.applyQualityTier('medium');
+          this.ui.onQualityUpdate(this.qualityMode, this.qualityTier);
+        } else if (this.qualityTier === 'medium') {
+          this.autoDowngraded = true;
+          this.autoGraceUntil = nowPerf + 6000;
+          this.applyQualityTier('low');
+          this.ui.onQualityUpdate(this.qualityMode, this.qualityTier);
+        }
+      }
+      return;
+    }
+
+    this.autoLowStreak = 0;
+
+    // If hardware heuristic conservatively picked 'medium' on a masked desktop GPU,
+    // promote to 'high' once sustained >=58 FPS headroom is confirmed.
+    const isCoarse = window.matchMedia('(pointer: coarse)').matches;
+    if (
+      !this.autoDowngraded &&
+      !isCoarse &&
+      this.qualityTier === 'medium' &&
+      fps >= 58 &&
+      (navigator.hardwareConcurrency || 4) >= 6
+    ) {
+      this.autoHighStreak++;
+      if (this.autoHighStreak >= 4) {
+        this.autoHighStreak = 0;
+        this.autoGraceUntil = nowPerf + 5000;
+        this.applyQualityTier('high');
+        this.ui.onQualityUpdate(this.qualityMode, this.qualityTier);
+      }
+    } else {
+      this.autoHighStreak = 0;
+    }
   }
 
   public setSpeakingPeer(peerId: string, speaking: boolean): void {
@@ -454,6 +545,14 @@ export class GameApp {
     window.visualViewport?.addEventListener('resize', this.scheduleViewportResize);
     screen.orientation?.addEventListener?.('change', this.scheduleViewportResize);
     document.addEventListener('fullscreenchange', this.scheduleViewportResize);
+    document.addEventListener('visibilitychange', () => {
+      const now = performance.now();
+      this.fpsFrames = 0;
+      this.fpsSampleStart = now;
+      this.autoLowStreak = 0;
+      this.autoGraceUntil = Math.max(this.autoGraceUntil, now + 1600);
+      this.clock.getDelta();
+    });
 
     const host = this.renderer.domElement.parentElement;
     if (host && typeof ResizeObserver !== 'undefined') {
@@ -975,6 +1074,7 @@ export class GameApp {
     this.matchEnded = false;
     this.freezeTimer = 0;
     this.fortressTimer = 0;
+    this.supplyDropTimer = 4.5;
     this.aimMode = 'mouse';
     this.touchMoveX = 0;
     this.touchMoveY = 0;
@@ -1370,6 +1470,9 @@ export class GameApp {
         hp,
         maxHp,
         shield: 0,
+        speed: 0,
+        armor: 0,
+        attack: 0,
         charge: 0,
         stars: 1,
         alive: 1,
@@ -1471,20 +1574,22 @@ export class GameApp {
 
     p.fireCooldown = heavy ? p.reloadTime * 1.45 : p.reloadTime;
     const muzzle = p.getMuzzleWorldPosition(this.tmpMuzzle);
-    const pierceSteel = heavy || p.stars >= 3;
-    const dmg = heavy ? 3 : p.stars >= 2 ? 2 : 1;
-    const speed = heavy ? 25.0 : p.bulletSpeed;
+    const hasAttackBuff = p.attackTimer > 0;
+    const pierceSteel = heavy || p.stars >= 3 || hasAttackBuff;
+    const baseDmg = heavy ? 3 : p.stars >= 2 ? 2 : 1;
+    const dmg = hasAttackBuff ? baseDmg + 1 : baseDmg;
+    const speed = heavy ? (hasAttackBuff ? 28.0 : 25.0) : p.bulletSpeed;
     const projId = `${this.net.peerId}_${Date.now()}_${Math.floor(Math.random() * 99)}`;
 
-    p.triggerRecoil(heavy);
+    p.triggerRecoil(heavy || hasAttackBuff);
     const dx = Math.sin(p.turretAngle);
     const dz = Math.cos(p.turretAngle);
-    this.vfx.spawnMuzzleBlast(muzzle.x, muzzle.y, muzzle.z, dx, dz, heavy);
+    this.vfx.spawnMuzzleBlast(muzzle.x, muzzle.y, muzzle.z, dx, dz, heavy || hasAttackBuff);
     this.cameraRig.addDirectionalKick(dx, dz, heavy ? 0.55 : 0.18);
     if (heavy) this.shockPulse = 0.55;
-    this.audio.playCannon(heavy, 1.0);
+    this.audio.playCannon(heavy || hasAttackBuff, 1.0);
 
-    const color = heavy ? 0xffdf78 : 0xffaa38;
+    const color = heavy ? 0xffdf78 : hasAttackBuff ? 0xff6d2e : 0xffaa38;
     this.spawnProjectile({
       id: projId,
       ownerId: p.id,
@@ -1733,11 +1838,31 @@ export class GameApp {
       }
     }
 
-    if (this.mode === 'pvp' && this.net.isHost() && !this.matchEnded) {
-      this.pvpPowerUpTimer -= dt;
-      if (this.pvpPowerUpTimer <= 0 && this.powerUps.length < 2) {
-        this.pvpPowerUpTimer = 11.0;
-        this.spawnRandomPowerUp(['star', 'shield', 'repair']);
+    const canSpawnSupply =
+      !this.matchEnded &&
+      (this.mode === 'campaign' || ((this.mode === 'pvp' || this.mode === 'coop') && this.net.isHost()));
+    if (canSpawnSupply) {
+      this.supplyDropTimer -= dt;
+      if (this.supplyDropTimer <= 0 && this.powerUps.length < 3) {
+        this.supplyDropTimer = 8.0 + Math.random() * 2.5;
+        const pool: PowerUpKind[] =
+          this.mode === 'pvp'
+            ? ['speed', 'armor', 'attack', 'shield', 'speed', 'armor', 'attack', 'repair']
+            : [
+                'speed',
+                'armor',
+                'attack',
+                'shield',
+                'speed',
+                'armor',
+                'attack',
+                'shield',
+                'repair',
+                'star',
+                'freeze',
+                'fortress',
+              ];
+        this.spawnRandomPowerUp(pool);
       }
     }
 
@@ -2004,8 +2129,9 @@ export class GameApp {
 
       if (this.mode === 'pvp' && target.isRemote) {
         if (p.ownerId === this.net.peerId && this.localPlayer) {
-          const fatal = target.hp - p.dmg <= 0;
-          target.hp = Math.max(0, target.hp - p.dmg);
+          const dealt = target.armorTimer > 0 ? p.dmg * 0.5 : p.dmg;
+          const fatal = target.hp - dealt <= 0.01;
+          target.hp = fatal ? 0 : Math.max(0, Number((target.hp - dealt).toFixed(2)));
           if (fatal) {
             target.alive = false;
             target.root.visible = false;
@@ -2020,7 +2146,7 @@ export class GameApp {
             this.emitKillFeed(`你击毁 ${target.name}`);
             this.checkPvpWinCondition();
           } else {
-            this.vfx.spawnSparks(p.x, 0.75, p.z, 16, 0xffb84a);
+            this.vfx.spawnSparks(p.x, 0.75, p.z, 16, target.armorTimer > 0 ? 0x62b6ff : 0xffb84a);
           }
           this.net.publishEvent(
             {
@@ -2080,7 +2206,17 @@ export class GameApp {
           }
 
           if (target.isBonusCarrier && (this.mode === 'campaign' || (this.mode === 'coop' && this.net.isHost()))) {
-            this.spawnRandomPowerUp(['star', 'shield', 'freeze', 'fortress', 'bomb', 'repair']);
+            this.spawnRandomPowerUp([
+              'speed',
+              'armor',
+              'attack',
+              'shield',
+              'star',
+              'freeze',
+              'fortress',
+              'bomb',
+              'repair',
+            ]);
           }
 
           if (this.mode === 'campaign' || this.mode === 'coop') {
@@ -2127,7 +2263,7 @@ export class GameApp {
     const item = new PowerUpItem(id, kind, x, z);
     this.scene.add(item.group);
     this.powerUps.push(item);
-    this.vfx.spawnShockwave(x, 0.1, z, 2.0, 0xffd257);
+    this.vfx.spawnShockwave(x, 0.1, z, 2.0, POWERUP_COLORS[kind]);
   }
 
   private removePowerUpById(id: string): void {
@@ -2174,27 +2310,40 @@ export class GameApp {
   private applyPowerUp(p: Tank, kind: PowerUpKind): void {
     this.audio.playPowerUp();
     p.score += 250;
-    this.vfx.spawnShockwave(p.x, 0.12, p.z, 2.6, 0xffe066);
+    this.vfx.spawnShockwave(p.x, 0.12, p.z, 2.6, POWERUP_COLORS[kind]);
 
     switch (kind) {
+      case 'speed':
+        p.speedTimer = BUFF_DURATION_SEC.speed;
+        this.ui.onToast(`极速 ${BUFF_DURATION_SEC.speed}s`);
+        break;
+      case 'armor':
+        p.armorTimer = BUFF_DURATION_SEC.armor;
+        this.ui.onToast(`防御 ${BUFF_DURATION_SEC.armor}s`);
+        break;
+      case 'attack':
+        p.attackTimer = BUFF_DURATION_SEC.attack;
+        p.refreshWeaponVisuals();
+        this.ui.onToast(`攻击 ${BUFF_DURATION_SEC.attack}s`);
+        break;
+      case 'shield':
+        p.shieldTimer = BUFF_DURATION_SEC.shield;
+        this.ui.onToast(`无敌 ${BUFF_DURATION_SEC.shield}s`);
+        break;
       case 'star':
         p.stars = Math.min(3, p.stars + 1);
         p.refreshWeaponVisuals();
         this.ui.onToast(p.stars >= 3 ? '★ 穿甲双轨炮' : '★ 主炮晋升');
         break;
-      case 'shield':
-        p.shieldTimer = 10.0;
-        this.ui.onToast('偏折护盾');
-        break;
       case 'freeze':
-        this.freezeTimer = 8.0;
-        this.ui.onToast('冰封时停');
+        this.freezeTimer = BUFF_DURATION_SEC.freeze;
+        this.ui.onToast(`冰封 ${BUFF_DURATION_SEC.freeze}s`);
         break;
       case 'fortress':
-        this.fortressTimer = 18.0;
+        this.fortressTimer = BUFF_DURATION_SEC.fortress;
         stampEagleFortress(this.world.grid, TileType.STEEL);
         this.world.rebuildAllInstances();
-        this.ui.onToast('钢铁壁垒');
+        this.ui.onToast(`钢铁壁垒 ${BUFF_DURATION_SEC.fortress}s`);
         break;
       case 'bomb':
         this.ui.onToast('重炮轰炸');
@@ -2216,6 +2365,11 @@ export class GameApp {
         if (this.mode !== 'pvp') this.playerLives = Math.min(6, this.playerLives + 1);
         this.ui.onToast('装甲已修复');
         break;
+    }
+
+    if (this.mode === 'pvp' || this.mode === 'coop') {
+      this.netSyncAccum = 0;
+      this.net.publishTankState(p.toNetSnapshot(0));
     }
   }
 
@@ -2316,6 +2470,20 @@ export class GameApp {
   private animate = (): void => {
     requestAnimationFrame(this.animate);
 
+    const nowPerf = performance.now();
+    this.fpsFrames++;
+    const fpsElapsedMs = nowPerf - this.fpsSampleStart;
+    if (fpsElapsedMs >= 400) {
+      const fps = Math.max(1, Math.round((this.fpsFrames * 1000) / fpsElapsedMs));
+      this.fpsFrames = 0;
+      this.fpsSampleStart = nowPerf;
+      if (fps !== this.lastReportedFps) {
+        this.lastReportedFps = fps;
+        this.ui.onFpsUpdate(fps);
+      }
+      this.evaluateAutoQuality(fps, nowPerf);
+    }
+
     const rawDt = Math.min(0.05, this.clock.getDelta());
     const isOnline = this.mode === 'pvp' || this.mode === 'coop';
     const simScale = this.slowMo && this.mode === 'campaign' ? 0.24 : 1.0;
@@ -2387,6 +2555,14 @@ export class GameApp {
         chargeRatio: this.localPlayer?.chargeRatio ?? 0,
         slowMo: this.slowMo,
         cameraPreset: this.cameraRig.preset,
+        buffs: {
+          speed: this.localPlayer?.speedTimer ?? 0,
+          armor: this.localPlayer?.armorTimer ?? 0,
+          attack: this.localPlayer?.attackTimer ?? 0,
+          shield: this.localPlayer?.shieldTimer ?? 0,
+          freeze: this.freezeTimer,
+          fortress: this.fortressTimer,
+        },
       });
     } else if (this.mode === 'demo') {
       this.updateAiDirector(dt);

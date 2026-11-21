@@ -280,6 +280,9 @@ export class MqttMultiplayer {
       snap.alive,
       snap.kills,
       snap.score,
+      snap.speed,
+      snap.armor,
+      snap.attack,
     ];
     this.client.publish(
       `${TOPIC_PREFIX}/r/${this.roomId}/st/${this.peerId}`,
@@ -520,6 +523,9 @@ export class MqttMultiplayer {
           alive: arr[12],
           kills: arr[13],
           score: arr[14],
+          speed: arr[15] || 0,
+          armor: arr[16] || 0,
+          attack: arr[17] || 0,
         });
         return;
       }

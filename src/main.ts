@@ -3,7 +3,16 @@ import { GameApp, GameUiBridge, HudSnapshot } from './GameApp';
 import { isValidModSelection, loadVehicleMod, parseMod, VEHICLE_MODS } from './mod/ModCatalog';
 import { computeBrowserFingerprint } from './net/Fingerprint';
 import { VoiceChat } from './net/VoiceChat';
-import { CameraPreset, GameMode, PeerPresence, PublicRoomBeacon, QualityTier, TileType } from './types';
+import {
+  BUFF_DURATION_SEC,
+  CameraPreset,
+  GameMode,
+  PeerPresence,
+  PublicRoomBeacon,
+  QualityMode,
+  QualityTier,
+  TileType,
+} from './types';
 
 function $(selector: string): HTMLElement | null {
   return document.querySelector(selector);
@@ -18,6 +27,8 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Top Tactical Bar
   const hudTop = $('#hud-top')!;
+  const fpsChips = $all('[data-fps-chip]');
+  const fpsVals = $all('[data-fps-val]');
   const btnHome = $('#btn-home')!;
   const hudStagePill = $('#hud-stage-pill')!;
   const hudEnemyStrip = $('#hud-enemy-strip')!;
@@ -80,10 +91,36 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Charge Bar & Toasts
+  // Charge Bar, Buffs & Toasts
+  const hudBuffs = $('#hud-buffs')!;
   const chargeWrap = $('#charge-bar-wrap')!;
   const chargeFill = $('#charge-bar-fill')!;
   const eventFeed = $('#event-feed')!;
+
+  type BuffKey = keyof typeof BUFF_DURATION_SEC;
+  const BUFF_META: Array<{ key: BuffKey; label: string; color: string }> = [
+    { key: 'speed', label: '极速', color: '#2ce6b8' },
+    { key: 'armor', label: '防御', color: '#4f9aff' },
+    { key: 'attack', label: '攻击', color: '#ff6d2e' },
+    { key: 'shield', label: '无敌', color: '#ffcf48' },
+    { key: 'freeze', label: '冰封', color: '#74eeff' },
+    { key: 'fortress', label: '钢堡', color: '#c2d0e0' },
+  ];
+  const buffUiSlots = BUFF_META.map((meta) => {
+    const pill = document.createElement('div');
+    pill.className = 'buff-pill hidden';
+    pill.style.setProperty('--buff-color', meta.color);
+    const fill = document.createElement('span');
+    fill.className = 'buff-fill';
+    const label = document.createElement('span');
+    label.className = 'buff-label';
+    label.textContent = meta.label;
+    const time = document.createElement('span');
+    time.className = 'buff-time';
+    pill.append(fill, label, time);
+    hudBuffs.appendChild(pill);
+    return { key: meta.key, maxSec: BUFF_DURATION_SEC[meta.key], pill, fill, time, prevTenths: -1 };
+  });
 
   // In-Battle Chat & Voice
   const chatLog = $('#chat-log')!;
@@ -316,6 +353,8 @@ window.addEventListener('DOMContentLoaded', () => {
         if (prevHudMode !== 'demo') {
           prevHudMode = 'demo';
           hudTop.classList.add('hidden');
+      hudBuffs.classList.add('hidden');
+          hudBuffs.classList.add('hidden');
           chargeWrap.classList.add('hidden');
           mobileControls.classList.add('hidden');
           document.body.classList.remove('mobile-combat');
@@ -427,6 +466,44 @@ window.addEventListener('DOMContentLoaded', () => {
         prevSlowMo = hud.slowMo;
         btnSlowmo.classList.toggle('active', hud.slowMo);
       }
+
+      // Independent active buff countdowns (dirty-checked at 0.1s precision)
+      let anyBuffActive = false;
+      for (let i = 0; i < buffUiSlots.length; i++) {
+        const slot = buffUiSlots[i];
+        const sec = hud.buffs[slot.key];
+        const tenths = sec > 0.04 ? Math.ceil(sec * 10) : 0;
+        if (tenths > 0) anyBuffActive = true;
+        if (tenths !== slot.prevTenths) {
+          slot.prevTenths = tenths;
+          if (tenths > 0) {
+            slot.pill.classList.remove('hidden');
+            slot.time.textContent = `${(tenths / 10).toFixed(1)}s`;
+            const ratio = Math.max(0, Math.min(1, sec / slot.maxSec));
+            slot.fill.style.transform = `scaleX(${ratio.toFixed(3)})`;
+          } else {
+            slot.pill.classList.add('hidden');
+          }
+        }
+      }
+      hudBuffs.classList.toggle('hidden', !anyBuffActive);
+    },
+
+    onFpsUpdate: (fps: number) => {
+      const text = String(fps);
+      const isLow = fps < 30;
+      const isWarn = fps >= 30 && fps < 50;
+      for (let i = 0; i < fpsVals.length; i++) {
+        fpsVals[i].textContent = text;
+      }
+      for (let i = 0; i < fpsChips.length; i++) {
+        fpsChips[i].classList.toggle('fps-warn', isWarn);
+        fpsChips[i].classList.toggle('fps-low', isLow);
+      }
+    },
+
+    onQualityUpdate: (mode: QualityMode, tier: QualityTier) => {
+      syncQualityUi(mode, tier);
     },
 
     onNetStatus: (st, url, ping) => {
@@ -547,6 +624,7 @@ window.addEventListener('DOMContentLoaded', () => {
       workshopBar.classList.add('hidden');
       resultModal.classList.add('hidden');
       hudTop.classList.add('hidden');
+      hudBuffs.classList.add('hidden');
       mobileControls.classList.add('hidden');
       document.body.classList.remove('mobile-combat');
       prevHudMode = '';
@@ -592,32 +670,44 @@ window.addEventListener('DOMContentLoaded', () => {
 
   const app = new GameApp(canvasRoot, uiBridge);
 
-  // ---- Graphics Quality Tier (persisted) ----
-  const QUALITY_KEY = 'agy_tank_quality';
-  const savedQuality = localStorage.getItem(QUALITY_KEY) as QualityTier | null;
-  const applyQualitySelection = (tier: QualityTier, persist = true) => {
-    app.setQualityTier(tier);
+  // ---- Automatic & Manual Graphics Quality Matching ----
+  const QUALITY_MODE_KEY = 'agy_tank_quality_mode';
+  const TIER_SHORT: Record<QualityTier, string> = { high: '高', medium: '中', low: '低' };
+
+  function syncQualityUi(mode: QualityMode, tier: QualityTier): void {
     qualityButtons.forEach((btn) => {
-      btn.classList.toggle('active', btn.dataset.quality === tier);
+      const val = btn.dataset.quality as QualityMode;
+      btn.classList.toggle('active', val === mode);
+      if (val === 'auto') {
+        btn.textContent = mode === 'auto' ? `自动·${TIER_SHORT[tier]}` : '自动';
+      }
     });
+  }
+
+  const savedQualityMode = localStorage.getItem(QUALITY_MODE_KEY) as QualityMode | null;
+  const applyQualitySelection = (mode: QualityMode, persist = true) => {
+    app.setQualityMode(mode);
     if (persist) {
       try {
-        localStorage.setItem(QUALITY_KEY, tier);
+        localStorage.setItem(QUALITY_MODE_KEY, mode);
       } catch {
         // ignore
       }
     }
   };
   applyQualitySelection(
-    savedQuality === 'high' || savedQuality === 'medium' || savedQuality === 'low'
-      ? savedQuality
-      : app.qualityTier,
+    savedQualityMode === 'auto' ||
+      savedQualityMode === 'high' ||
+      savedQualityMode === 'medium' ||
+      savedQualityMode === 'low'
+      ? savedQualityMode
+      : 'auto',
     false,
   );
   qualityButtons.forEach((btn) => {
     btn.onclick = () => {
-      const q = btn.dataset.quality as QualityTier;
-      if (q === 'high' || q === 'medium' || q === 'low') {
+      const q = btn.dataset.quality as QualityMode;
+      if (q === 'auto' || q === 'high' || q === 'medium' || q === 'low') {
         applyQualitySelection(q, true);
       }
     };
@@ -1266,6 +1356,7 @@ window.addEventListener('DOMContentLoaded', () => {
     heroOverlay.classList.add('hidden');
     workshopBar.classList.remove('hidden');
     hudTop.classList.add('hidden');
+    hudBuffs.classList.add('hidden');
     resultModal.classList.add('hidden');
     closeChat();
     chatLog.innerHTML = '';
@@ -1309,6 +1400,7 @@ window.addEventListener('DOMContentLoaded', () => {
     workshopBar.classList.add('hidden');
     resultModal.classList.add('hidden');
     hudTop.classList.add('hidden');
+    hudBuffs.classList.add('hidden');
     mobileControls.classList.add('hidden');
     document.body.classList.remove('mobile-combat');
     prevHudMode = '';
@@ -1419,6 +1511,7 @@ window.addEventListener('DOMContentLoaded', () => {
     heroOverlay.classList.remove('hidden');
     workshopBar.classList.add('hidden');
     hudTop.classList.add('hidden');
+    hudBuffs.classList.add('hidden');
     mobileControls.classList.add('hidden');
     document.body.classList.remove('mobile-combat');
     prevHudMode = '';

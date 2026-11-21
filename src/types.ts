@@ -19,9 +19,30 @@ export type CameraPreset = 'diorama' | 'chase' | 'orbit';
 
 export type QualityTier = 'high' | 'medium' | 'low';
 
+export type QualityMode = 'auto' | QualityTier;
+
 export type EnemyArchetype = 'scout' | 'raider' | 'twin' | 'juggernaut';
 
-export type PowerUpKind = 'star' | 'shield' | 'freeze' | 'fortress' | 'bomb' | 'repair';
+export type PowerUpKind =
+  | 'speed'
+  | 'armor'
+  | 'attack'
+  | 'shield'
+  | 'star'
+  | 'freeze'
+  | 'fortress'
+  | 'bomb'
+  | 'repair';
+
+/** Independent buff durations in seconds (every timed power-up is strictly <= 30s). */
+export const BUFF_DURATION_SEC = {
+  speed: 18,
+  armor: 22,
+  attack: 20,
+  shield: 12,
+  freeze: 10,
+  fortress: 20,
+} as const;
 
 export const SQUAD_COLORS = [
   0xd99b30, // P1 Classic Desert Amber Gold
@@ -63,6 +84,9 @@ export interface NetTankSnapshot {
   hp: number;
   maxHp: number;
   shield: number;
+  speed: number;
+  armor: number;
+  attack: number;
   charge: number;
   stars: number;
   alive: number;

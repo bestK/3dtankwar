@@ -246,6 +246,9 @@ export class Tank {
   public alive = true;
   public isSpeaking = false;
   public shieldTimer = 0;
+  public speedTimer = 0;
+  public armorTimer = 0;
+  public attackTimer = 0;
   public fireCooldown = 0;
   public chargeRatio = 0;
   public kills = 0;
@@ -673,14 +676,16 @@ export class Tank {
   }
 
   public refreshWeaponVisuals(): void {
-    const useTwin = this.archetype === 'twin' || this.stars >= 2;
+    const useTwin = this.archetype === 'twin' || this.stars >= 2 || this.attackTimer > 0;
     this.singleBarrel.visible = !useTwin;
     this.twinBarrels.visible = useTwin;
-    this.railCoils.visible = this.stars >= 3 || this.chargeRatio > 0.2;
+    this.railCoils.visible = this.stars >= 3 || this.attackTimer > 0 || this.chargeRatio > 0.2;
 
     if (this.team === 'player') {
-      this.reloadTime = this.stars >= 2 ? 0.25 : 0.35;
-      this.bulletSpeed = this.stars >= 2 ? 21.5 : 17.5;
+      const baseReload = this.stars >= 2 ? 0.25 : 0.35;
+      const baseBullet = this.stars >= 2 ? 21.5 : 17.5;
+      this.reloadTime = this.attackTimer > 0 ? baseReload * 0.72 : baseReload;
+      this.bulletSpeed = this.attackTimer > 0 ? baseBullet * 1.2 : baseBullet;
     }
   }
 
@@ -760,14 +765,16 @@ export class Tank {
 
   public takeDamage(dmg: number): boolean {
     if (!this.alive || this.shieldTimer > 0) return false;
-    this.hp = Math.max(0, this.hp - dmg);
+    const effectiveDmg = this.armorTimer > 0 ? dmg * 0.5 : dmg;
+    this.hp = Math.max(0, Number((this.hp - effectiveDmg).toFixed(2)));
 
     if (this.archetype === 'juggernaut' && this.hp > 0) {
       const stages = [0x9e4b3b, 0xb88635, 0x5c8a66, 0x5c6878];
-      this.primaryMat.color.setHex(stages[Math.min(stages.length - 1, this.hp - 1)]);
+      this.primaryMat.color.setHex(stages[Math.min(stages.length - 1, Math.ceil(this.hp) - 1)]);
     }
 
-    if (this.hp <= 0) {
+    if (this.hp <= 0.01) {
+      this.hp = 0;
       this.alive = false;
       this.root.visible = false;
       return true;
@@ -779,11 +786,15 @@ export class Tank {
     this.alive = true;
     this.hp = this.maxHp;
     this.chargeRatio = 0;
+    this.speedTimer = 0;
+    this.armorTimer = 0;
+    this.attackTimer = 0;
     this.chargeGlow.visible = false;
     this.primaryMat.color.setHex(this.baseColorHex);
     this.shieldTimer = shieldSec;
     this.root.visible = true;
     this.lastNetSeq = 0;
+    this.refreshWeaponVisuals();
     this.setPosition(x, z, angle);
   }
 
@@ -820,6 +831,9 @@ export class Tank {
     this.hp = snap.hp;
     this.maxHp = snap.maxHp;
     this.shieldTimer = snap.shield;
+    this.speedTimer = snap.speed;
+    this.armorTimer = snap.armor;
+    this.attackTimer = snap.attack;
     this.chargeRatio = snap.charge;
     this.stars = snap.stars;
     this.kills = snap.kills;
@@ -849,9 +863,12 @@ export class Tank {
       vz: Number(this.syncVz.toFixed(2)),
       hull: Number(this.hullAngle.toFixed(3)),
       turret: Number(this.turretAngle.toFixed(3)),
-      hp: this.hp,
+      hp: Number(this.hp.toFixed(2)),
       maxHp: this.maxHp,
       shield: Number(this.shieldTimer.toFixed(2)),
+      speed: Number(this.speedTimer.toFixed(2)),
+      armor: Number(this.armorTimer.toFixed(2)),
+      attack: Number(this.attackTimer.toFixed(2)),
       charge: Number(this.chargeRatio.toFixed(2)),
       stars: this.stars,
       alive: this.alive ? 1 : 0,
@@ -874,10 +891,11 @@ export class Tank {
     const [gx, gz] = world.worldToGrid(this.x, this.z);
     const onIce = world.getTile(gx, gz) === TileType.ICE;
 
+    const speedBoost = this.speedTimer > 0 ? 1.45 : 1.0;
+    const topSpeed = this.maxSpeed * speedBoost;
     const inputLen = Math.hypot(moveX, moveZ);
-    const accel = onIce ? 10.5 : 42.0;
+    const accel = (onIce ? 10.5 : 42.0) * (this.speedTimer > 0 ? 1.35 : 1.0);
     const stopDrag = onIce ? 1.75 : 18.0;
-    // High lateral track grip on dry ground prevents sideways crab-walking / drifting on 90° turns!
     const lateralGrip = onIce ? 2.2 : 28.0;
 
     const prevVx = this.vx;
@@ -889,7 +907,8 @@ export class Tank {
       const nx = moveX / inputLen;
       const nz = moveZ / inputLen;
       const desiredHull = Math.atan2(nx, nz);
-      this.hullAngle = lerpAngle(this.hullAngle, desiredHull, Math.min(1, dt * (onIce ? 11.0 : 18.5)));
+      const turnRate = (onIce ? 11.0 : 18.5) * (this.speedTimer > 0 ? 1.25 : 1.0);
+      this.hullAngle = lerpAngle(this.hullAngle, desiredHull, Math.min(1, dt * turnRate));
 
       // Decompose velocity into forward drive axis + lateral slip axis
       const px = -nz;
@@ -897,16 +916,16 @@ export class Tank {
       let fwdSpd = this.vx * nx + this.vz * nz;
       let latSpd = this.vx * px + this.vz * pz;
 
-      fwdSpd = Math.min(this.maxSpeed, fwdSpd + accel * dt);
+      fwdSpd = Math.min(topSpeed, fwdSpd + accel * dt);
       latSpd *= Math.exp(-lateralGrip * dt);
 
       this.vx = nx * fwdSpd + px * latSpd;
       this.vz = nz * fwdSpd + pz * latSpd;
 
       const spd = Math.hypot(this.vx, this.vz);
-      if (spd > this.maxSpeed) {
-        this.vx = (this.vx / spd) * this.maxSpeed;
-        this.vz = (this.vz / spd) * this.maxSpeed;
+      if (spd > topSpeed) {
+        this.vx = (this.vx / spd) * topSpeed;
+        this.vz = (this.vz / spd) * topSpeed;
       }
     } else {
       const damp = Math.exp(-stopDrag * dt);
@@ -1080,6 +1099,13 @@ export class Tank {
   private updateVisualKinematics(dt: number, vfx: VfxSystem, groundSpeed: number): void {
     this.fireCooldown = Math.max(0, this.fireCooldown - dt);
     this.shieldTimer = Math.max(0, this.shieldTimer - dt);
+    this.speedTimer = Math.max(0, this.speedTimer - dt);
+    this.armorTimer = Math.max(0, this.armorTimer - dt);
+    const hadAttack = this.attackTimer > 0;
+    this.attackTimer = Math.max(0, this.attackTimer - dt);
+    if (hadAttack && this.attackTimer === 0) {
+      this.refreshWeaponVisuals();
+    }
 
     // Suspension damped spring
     this.pitchVel += -this.pitch * 48 * dt;
@@ -1111,13 +1137,28 @@ export class Tank {
 
     const nowMs = performance.now();
 
-    // Muzzle thermal glow + charge coil glow
-    this.muzzleMat.emissiveIntensity = this.barrelHeat * 2.2 + this.chargeRatio * 3.0;
+    // Muzzle thermal glow + charge coil glow + attack buff overdrive
+    const atkGlow = this.attackTimer > 0 ? 1.45 : 0;
+    this.muzzleMat.emissiveIntensity = this.barrelHeat * 2.2 + this.chargeRatio * 3.0 + atkGlow;
     const fullChargePulse =
       this.chargeRatio >= 0.98 ? 0.8 + Math.sin(nowMs * 0.02) * 0.2 : 1;
     this.barrelMat.emissiveIntensity =
-      (this.chargeRatio * 3.2 + this.barrelHeat * 0.8) * fullChargePulse;
-    this.railCoils.visible = this.stars >= 3 || this.chargeRatio > 0.15;
+      (this.chargeRatio * 3.2 + this.barrelHeat * 0.8 + atkGlow * 0.7) * fullChargePulse;
+    this.railCoils.visible = this.stars >= 3 || this.attackTimer > 0 || this.chargeRatio > 0.15;
+
+    // Team / Buff ground ring tint (reflects Speed or Armor buff when active)
+    if (this.teamRingMesh.visible) {
+      if (this.armorTimer > 0) {
+        this.teamRingMat.color.setRGB(0.45, 1.35, 2.6);
+        this.teamRingMat.opacity = 0.72;
+      } else if (this.speedTimer > 0) {
+        this.teamRingMat.color.setRGB(0.3, 2.3, 1.75);
+        this.teamRingMat.opacity = 0.72;
+      } else {
+        this.teamRingMat.color.setHex(this.baseColorHex).multiplyScalar(1.5);
+        this.teamRingMat.opacity = this.modGroup.children.length > 0 ? 0.62 : 0.38;
+      }
+    }
 
     // Pulsing red aura under the hull while charging
     this.chargeGlow.visible = this.chargeRatio > 0.02 && this.alive;
